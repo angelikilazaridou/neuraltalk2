@@ -16,15 +16,12 @@ function DataLoader:__init(opt)
   print('DataLoader loading h5 file: ', opt.h5_file)
   self.h5_file = hdf5.open(opt.h5_file, 'r')
   
-  -- extract image size from dataset
+  -- extract image features from dataset
   local images_size = self.h5_file:read('/images'):dataspaceSize()
-  assert(#images_size == 4, '/images should be a 4D tensor')
-  assert(images_size[3] == images_size[4], 'width and height must match')
+  assert(#images_size == 2, '/images should be a 2D tensor')
   self.num_images = images_size[1]
-  self.num_channels = images_size[2]
-  self.max_image_size = images_size[3]
-  print(string.format('read %d images of size %dx%dx%d', self.num_images, 
-            self.num_channels, self.max_image_size, self.max_image_size))
+  self.feat_size = images_size[2]
+  print(string.format('read %d images of size %d', self.num_images, self.feat_size))
 
   -- load in the sequence data
   local seq_size = self.h5_file:read('/labels'):dataspaceSize()
@@ -70,7 +67,7 @@ end
 --[[
   Split is a string identifier (e.g. train|val|test)
   Returns a batch of data:
-  - X (N,3,H,W) containing the images
+  - X (N,4096) containing the images
   - y (L,M) containing the captions as columns (which is better for contiguous memory during training)
   - info table of length N, containing additional information
   The data is iterated linearly in order. Iterators for any split can be reset manually with resetIterator()
@@ -84,7 +81,7 @@ function DataLoader:getBatch(opt)
   assert(split_ix, 'split ' .. split .. ' not found.')
 
   -- pick an index of the datapoint to load next
-  local img_batch_raw = torch.ByteTensor(batch_size, 3, 256, 256)
+  local img_batch_raw = torch.CudaTensor(batch_size, self.feat_size)
   local label_batch = torch.LongTensor(batch_size * seq_per_img, self.seq_length)
   local max_index = #split_ix
   local wrapped = false
@@ -99,8 +96,7 @@ function DataLoader:getBatch(opt)
     assert(ix ~= nil, 'bug: split ' .. split .. ' was accessed out of bounds with ' .. ri)
 
     -- fetch the image from h5
-    local img = self.h5_file:read('/images'):partial({ix,ix},{1,self.num_channels},
-                            {1,self.max_image_size},{1,self.max_image_size})
+    local img = self.h5_file:read('/images'):partial({ix,ix},{1,self.feat_size})
     img_batch_raw[i] = img
 
     -- fetch the sequence labels

@@ -4,7 +4,7 @@ local net_utils = require 'misc.net_utils'
 local LSTM = require 'misc.LSTM'
 
 -------------------------------------------------------------------------------
--- Language Model core
+-- Decoder Language Model core
 -------------------------------------------------------------------------------
 
 local layer, parent = torch.class('nn.LanguageModel', 'nn.Module')
