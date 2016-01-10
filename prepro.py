@@ -1,3 +1,6 @@
+'''
+A: python prepro.py --input_json coco/coco_raw.json --num_val 50 --num_test 50 --num_train 100 --image_feats_Tr /home/angeliki/sata/DATA/MSCOCO/features/train2014/features_fc7.mat --image_feats_Ts /home/angeliki/sata/DATA/MSCOCO/features/val2014/features_fc7.mat --image_list_Ts /home/angeliki/sata/DATA/MSCOCO/features/train2014/features_fc7.index --image_list_Ts /home/angeliki/sata/DATA/MSCOCO/features/val2014/features_fc7.index
+'''
 """
 Preprocess a raw json dataset into hdf5/json files for use in data_loader.lua
 
@@ -11,7 +14,7 @@ This script reads this json, does some basic preprocessing on the captions
 
 Output: a json file and an hdf5 file
 The hdf5 file contains several fields:
-/images is (N,3,256,256) uint8 array of raw image data in RGB format
+/images is (N,4096) uint8 array of image features
 /labels is (M,max_length) uint32 array of encoded labels, zero padded
 /label_start_ix and /label_end_ix are (N,) uint32 arrays of pointers to the 
   first and last indices (in range 1..M) of labels for each image
@@ -32,6 +35,7 @@ import string
 import h5py
 import numpy as np
 from scipy.misc import imread, imresize
+import scipy.io
 
 def prepro_captions(imgs):
   
@@ -97,16 +101,19 @@ def build_vocab(imgs, params):
 def assign_splits(imgs, params):
   num_val = params['num_val']
   num_test = params['num_test']
+  num_train = params['num_train']
 
   for i,img in enumerate(imgs):
       if i < num_val:
         img['split'] = 'val'
       elif i < num_val + num_test: 
         img['split'] = 'test'
-      else: 
+      elif i<num_val + num_test + num_train: 
         img['split'] = 'train'
+      else:
+	continue
 
-  print 'assigned %d to val, %d to test.' % (num_val, num_test)
+  print 'assigned %d to val, %d to test, %d to train.' % (num_val, num_test, num_train)
 
 def encode_captions(imgs, params, wtoi):
   """ 
@@ -152,6 +159,24 @@ def encode_captions(imgs, params, wtoi):
   print 'encoded captions to array of size ', `L.shape`
   return L, label_start_ix, label_end_ix, label_length
 
+def create_image_dict(params,flag):
+  
+  img_dict = {}
+  #get features
+  feats = scipy.io.loadmat(params["image_feats_"+flag])
+  feats = feats['feats']
+
+  l = 0
+  with open(params["image_list_"+flag],'r') as f:
+    for line in  f:
+      #index by filepath 
+      img_id = line.strip().split('/',7)[-1]
+      img_dict[img_id] = feats[l,:]
+      l +=1
+  return img_dict
+  
+  
+
 def main(params):
 
   imgs = json.load(open(params['input_json'], 'r'))
@@ -172,28 +197,25 @@ def main(params):
   # encode captions in large arrays, ready to ship to hdf5 file
   L, label_start_ix, label_end_ix, label_length = encode_captions(imgs, params, wtoi)
 
+  #get image feats for Tr and Ts
+  img_dict = dict(create_image_dict(params,'Tr'), **create_image_dict(params,'Ts'))
+
   # create output h5 file
-  N = len(imgs)
+  N = params['num_train']+params['num_test']+params['num_val']
   f = h5py.File(params['output_h5'], "w")
   f.create_dataset("labels", dtype='uint32', data=L)
   f.create_dataset("label_start_ix", dtype='uint32', data=label_start_ix)
   f.create_dataset("label_end_ix", dtype='uint32', data=label_end_ix)
   f.create_dataset("label_length", dtype='uint32', data=label_length)
-  dset = f.create_dataset("images", (N,3,256,256), dtype='uint8') # space for resized images
+  dset = f.create_dataset("images", (N,4096), dtype='float32') # space for resized images
   for i,img in enumerate(imgs):
-    # load the image
-    I = imread(os.path.join(params['images_root'], img['file_path']))
-    try:
-        Ir = imresize(I, (256,256))
-    except:
-        print 'failed resizing image %s - see http://git.io/vBIE0' % (img['file_path'],)
-        raise
-    # handle grayscale input images
-    if len(Ir.shape) == 2:
-      Ir = Ir[:,:,np.newaxis]
-      Ir = np.concatenate((Ir,Ir,Ir), axis=2)
-    # and swap order of axes from (256,256,3) to (3,256,256)
-    Ir = Ir.transpose(2,0,1)
+    #if image not assigned, then break since the dataset is in consecutive order
+    if 'split' not in img or img['split'] not in ["train","test","val"]:
+	break
+
+    # load the image feats
+    Ir = img_dict[img['file_path']]
+    
     # write to h5
     dset[i] = Ir
     if i % 1000 == 0:
@@ -207,6 +229,9 @@ def main(params):
   out['images'] = []
   for i,img in enumerate(imgs):
     
+    if 'split' not in img or img['split'] not in ["train","test","val"]:    
+      break
+
     jimg = {}
     jimg['split'] = img['split']
     if 'file_path' in img: jimg['file_path'] = img['file_path'] # copy it over, might need
@@ -224,17 +249,28 @@ if __name__ == "__main__":
   # input json
   parser.add_argument('--input_json', required=True, help='input json file to process into hdf5')
   parser.add_argument('--num_val', required=True, type=int, help='number of images to assign to validation data (for CV etc)')
-  parser.add_argument('--output_json', default='data.json', help='output json file')
-  parser.add_argument('--output_h5', default='data.h5', help='output h5 file')
+  parser.add_argument('--output_json', default='data_with_feats.json', help='output json file')
+  parser.add_argument('--output_h5', default='data_with_feats.h5', help='output h5 file')
   
   # options
   parser.add_argument('--max_length', default=16, type=int, help='max length of a caption, in number of words. captions longer than this get clipped.')
-  parser.add_argument('--images_root', default='', help='root location in which images are stored, to be prepended to file_path in input json')
   parser.add_argument('--word_count_threshold', default=5, type=int, help='only words that occur more than this number of times will be put in vocab')
   parser.add_argument('--num_test', default=0, type=int, help='number of test images (to withold until very very end)')
+  parser.add_argument('--num_train', default=40000, type=int, help='number of train images')
+
+  #for image feats  
+  parser.add_argument('--image_feats_Tr', required=True, help='The path where the mat file containing the TRAIN image features is stored')
+  parser.add_argument('--image_list_Tr',required=True, help='The pather where the index of TRAIN images whose features are stored in the mat is stored')
+  parser.add_argument('--image_feats_Ts', required=True, help='The path where the mat file containing the TEST image features is stored')
+  parser.add_argument('--image_list_Ts',required=True, help='The pather where the index of TEST images whose features are stored in the mat is stored')
+
 
   args = parser.parse_args()
   params = vars(args) # convert to ordinary dict
+  #add to name of files size of training
+  params['output_json'] = params['output_json'].split('.')[0]+"_"+str(params['num_train'])+"."+params['output_json'].split('.')[1]
+  params['output_h5'] = params['output_h5'].split('.')[0]+"_"+str(params['num_train'])+"."+params['output_h5'].split('.')[1]
+  print 'Saving files to ',params['output_json'], params['output_h5']
   print 'parsed input parameters:'
   print json.dumps(params, indent = 2)
   main(params)
