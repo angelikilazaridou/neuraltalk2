@@ -21,6 +21,7 @@ function layer:__init(opt)
   self.seq_length = utils.getopt(opt, 'seq_length')
   -- create the core lstm network. note +1 for both the START and END tokens
   self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
+  --A: lookup table are vectors
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
   self:_createInitState(1) -- will be lazily resized later during forward passes
 end
@@ -43,10 +44,11 @@ function layer:_createInitState(batch_size)
 end
 
 function layer:createClones()
-  -- construct the net clones
+  -- construct the net clones of size sequence length
   print('constructing clones inside the LanguageModel')
-  self.clones = {self.core}
-  self.lookup_tables = {self.lookup_table}
+  self.clones = {self.core} --A: an LSTM unit
+  self.lookup_tables = {self.lookup_table} -- A: a look-up table for what???
+  --A: the sequence units are all new units (via deep copy) but all share some parameters
   for t=2,self.seq_length+2 do
     self.clones[t] = self.core:clone('weight', 'bias', 'gradWeight', 'gradBias')
     self.lookup_tables[t] = self.lookup_table:clone('weight', 'gradWeight')
@@ -295,8 +297,10 @@ function layer:updateOutput(input)
 
   assert(seq:size(1) == self.seq_length)
   local batch_size = seq:size(2)
+  --A: init with specific size
   self.output:resize(self.seq_length+2, batch_size, self.vocab_size+1)
-  
+
+  --A: each for every parallel process  
   self:_createInitState(batch_size)
 
   self.state = {[0] = self.init_state}
@@ -313,7 +317,9 @@ function layer:updateOutput(input)
     elseif t == 2 then
       -- feed in the start tokens
       local it = torch.LongTensor(batch_size):fill(self.vocab_size+1)
+      --A: why do we need the look  up table here?
       self.lookup_tables_inputs[t] = it
+      -- get vectors of START Symbols
       xt = self.lookup_tables[t]:forward(it) -- NxK sized input (token embedding vectors)
     else
       -- feed in the rest of the sequence...

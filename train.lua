@@ -1,6 +1,3 @@
-
-
-
 require 'torch'
 require 'nn'
 require 'nngraph'
@@ -143,7 +140,7 @@ print('total number of parameters in CNN mapping: ', cnn_params:nElement())
 assert(params:nElement() == grad_params:nElement())
 assert(cnn_params:nElement() == cnn_grad_params:nElement())
 
-
+--A: this is really for saving models efficiency
 -- construct thin module clones that share parameters with the actual
 -- modules. These thin module will have no intermediates and will be used
 -- for checkpointing to write significantly smaller checkpoint files
@@ -151,6 +148,7 @@ local thin_lm = protos.lm:clone()
 thin_lm.core:share(protos.lm.core, 'weight', 'bias') -- TODO: we are assuming that LM has specific members! figure out clean way to get rid of, not modular.
 thin_lm.lookup_table:share(protos.lm.lookup_table, 'weight', 'bias')
 local thin_cnn = protos.cnn:clone('weight', 'bias')
+--A: what is this??
 -- sanitize all modules of gradient storage so that we dont save big checkpoints
 net_utils.sanitize_gradients(thin_cnn)
 local lm_modules = thin_lm:getModulesList()
@@ -226,8 +224,10 @@ end
 -------------------------------------------------------------------------------
 local iter = 0
 local function lossFun()
+  --A: set model to training mode (flag given in nn.Module)
   protos.cnn:training()
   protos.lm:training()
+  
   grad_params:zero()
 
   -----------------------------------------------------------------------------
