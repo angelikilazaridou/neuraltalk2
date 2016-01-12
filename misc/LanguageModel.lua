@@ -2,6 +2,7 @@ require 'nn'
 local utils = require 'misc.utils'
 local net_utils = require 'misc.net_utils'
 local LSTM = require 'misc.LSTM'
+require 'misc.MemNN'
 
 -------------------------------------------------------------------------------
 -- Language Model core
@@ -19,9 +20,16 @@ function layer:__init(opt)
   local dropout = utils.getopt(opt, 'dropout', 0)
   -- options for Language Model
   self.seq_length = utils.getopt(opt, 'seq_length')
+  -- options for Memory Network
+  self.hops = utils.getopt(opt,'hops',1)
+  self.image_encoding_size = utils.getopt(opt,'image_encoding_size') 
   -- create the core lstm network. note +1 for both the START and END tokens
   self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
+  -- create the memory network
+  self.memMM = g_build_model(self.image_encoding_size, self.rnn_size, self.hops)
+  --create the lookup table
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
+
   self:_createInitState(1) -- will be lazily resized later during forward passes
 end
 
@@ -47,29 +55,35 @@ function layer:createClones()
   print('constructing clones inside the LanguageModel')
   self.clones = {self.core}
   self.lookup_tables = {self.lookup_table}
+  self.memNNs = {self.memNN}
   for t=2,self.seq_length+1 do
     self.clones[t] = self.core:clone('weight', 'bias', 'gradWeight', 'gradBias')
     self.lookup_tables[t] = self.lookup_table:clone('weight', 'gradWeight')
+    self.memNNs[t] = self.memNN:clone('weight','bias','gradWeight','gradBias')
   end
   print('Clones done!')
 end
 
 function layer:getModulesList()
-  return {self.core, self.lookup_table}
+  return {self.core, self.lookup_table, self.memNN}
 end
 
 function layer:parameters()
-  -- we only have two internal modules, return their params
+  -- we only have three internal modules, return their params
   local p1,g1 = self.core:parameters()
-  local p2,g2 = self.lookup_table:parameters()
+  local p2,g2 = self.lookup_table:parameters() 
+  local p3, g3 = self.memNN:parameters()
+  
 
   local params = {}
   for k,v in pairs(p1) do table.insert(params, v) end
+  for k,v in pairs(p2) do table.insert(params, v) end
   for k,v in pairs(p2) do table.insert(params, v) end
   
   local grad_params = {}
   for k,v in pairs(g1) do table.insert(grad_params, v) end
   for k,v in pairs(g2) do table.insert(grad_params, v) end
+  for k,v in pairs(g3) do table.insert(grad_params, v) end
 
   -- todo: invalidate self.clones if params were requested?
   -- what if someone outside of us decided to call getParameters() or something?
@@ -82,12 +96,14 @@ function layer:training()
   if self.clones == nil then self:createClones() end -- create these lazily if needed
   for k,v in pairs(self.clones) do v:training() end
   for k,v in pairs(self.lookup_tables) do v:training() end
+  for k,v in pairs(self.memNNs) do v:training() end
 end
 
 function layer:evaluate()
   if self.clones == nil then self:createClones() end -- create these lazily if needed
   for k,v in pairs(self.clones) do v:evaluate() end
   for k,v in pairs(self.lookup_tables) do v:evaluate() end
+  for k,v in pairs(self.memNNs) do v:evaluate() end
 end
 
 --[[

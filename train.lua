@@ -117,6 +117,7 @@ else
   lmOpt.batch_size = opt.batch_size * opt.seq_per_img
   
   protos.lm = nn.LanguageModel(lmOpt)
+  --A: probably this we don't need in the memNN case
   protos.cnn = net_utils.build_cnn({image_encoding_size = opt.image_encoding_size, encoding_size = opt.input_encoding_size, backend = cnn_backend})
   
   -- initialize a special FeatExpander module that "corrects" for the batch number discrepancy 
