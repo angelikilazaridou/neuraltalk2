@@ -51,19 +51,19 @@ local function forwardApiTestFactory(dtype)
     local output = lm:forward{imgs, seq}
     tester:assertlt(torch.max(output:view(-1)), 0) -- log probs should be <0
 
-    -- the output should be of size (seq_length + 2, batch_size, vocab_size + 1)
+    -- the output should be of size (seq_length + 1, batch_size, vocab_size + 1)
     -- where the +1 is for the special END token appended at the end.
-    tester:assertTensorSizeEq(output, {opt.seq_length+2, opt.batch_size, opt.vocab_size+1})
+    tester:assertTensorSizeEq(output, {opt.seq_length+1, opt.batch_size, opt.vocab_size+1})
 
     local loss = crit:forward(output, seq)
 
     local gradOutput = crit:backward(output, seq)
-    tester:assertTensorSizeEq(gradOutput, {opt.seq_length+2, opt.batch_size, opt.vocab_size+1})
+    tester:assertTensorSizeEq(gradOutput, {opt.seq_length+1, opt.batch_size, opt.vocab_size+1})
 
     -- make sure the pattern of zero gradients is as expected
-    local gradAbs = torch.max(torch.abs(gradOutput), 3):view(opt.seq_length+2, opt.batch_size)
+    local gradAbs = torch.max(torch.abs(gradOutput), 3):view(opt.seq_length+1, opt.batch_size)
     local gradZeroMask = torch.eq(gradAbs,0)
-    local expectedGradZeroMask = torch.ByteTensor(opt.seq_length+2,opt.batch_size):zero()
+    local expectedGradZeroMask = torch.ByteTensor(opt.seq_length+1,opt.batch_size):zero()
     expectedGradZeroMask[{ {1}, {} }]:fill(1) -- first time step should be zero grad (img was passed in)
     expectedGradZeroMask[{ {6,9}, 1 }]:fill(1)
     expectedGradZeroMask[{ {7,9}, 6 }]:fill(1)
@@ -116,15 +116,15 @@ local function gradCheckLM()
 
   local gradInput_num = gradcheck.numeric_gradient(f, imgs, 1, 1e-6)
 
-  -- print(gradInput)
-  -- print(gradInput_num)
-  -- local g = gradInput:view(-1)
-  -- local gn = gradInput_num:view(-1)
-  -- for i=1,g:nElement() do
-  --   local r = gradcheck.relative_error(g[i],gn[i])
-  --   print(i, g[i], gn[i], r)
-  -- end
-
+   print(gradInput)
+   print(gradInput_num)
+   local g = gradInput:view(-1)
+   local gn = gradInput_num:view(-1)
+   for i=1,g:nElement() do
+     local r = gradcheck.relative_error(g[i],gn[i])
+     print(i, g[i], gn[i], r)
+   end
+  
   tester:assertTensorEq(gradInput, gradInput_num, 1e-4)
   tester:assertlt(gradcheck.relative_error(gradInput, gradInput_num, 1e-8), 1e-4)
 end
@@ -164,14 +164,14 @@ local function gradCheck()
 
   local gradInput_num = gradcheck.numeric_gradient(f, imgs, 1, 1e-6)
 
-  -- print(gradInput)
-  -- print(gradInput_num)
-  -- local g = gradInput:view(-1)
-  -- local gn = gradInput_num:view(-1)
-  -- for i=1,g:nElement() do
-  --   local r = gradcheck.relative_error(g[i],gn[i])
-  --   print(i, g[i], gn[i], r)
-  -- end
+   print(gradInput)
+   print(gradInput_num)
+   local g = gradInput:view(-1)
+   local gn = gradInput_num:view(-1)
+   for i=1,g:nElement() do
+     local r = gradcheck.relative_error(g[i],gn[i])
+     print(i, g[i], gn[i], r)
+   end
 
   tester:assertTensorEq(gradInput, gradInput_num, 1e-4)
   tester:assertlt(gradcheck.relative_error(gradInput, gradInput_num, 1e-8), 5e-4)
@@ -313,9 +313,9 @@ tests.floatApiForwardTest = forwardApiTestFactory('torch.FloatTensor')
 tests.cudaApiForwardTest = forwardApiTestFactory('torch.CudaTensor')
 tests.gradCheck = gradCheck
 tests.gradCheckLM = gradCheckLM
-tests.overfit = overfit
-tests.sample = sample
-tests.sample_beam = sample_beam
+--tests.overfit = overfit
+--tests.sample = sample
+--tests.sample_beam = sample_beam
 
 tester:add(tests)
 tester:run()

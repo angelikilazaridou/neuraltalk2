@@ -9,6 +9,7 @@ require 'misc.DataLoader'
 require 'misc.LanguageModel'
 local net_utils = require 'misc.net_utils'
 require 'misc.optim_updates'
+require 'misc.gradcheck'
 
 -------------------------------------------------------------------------------
 -- Input arguments and options
