@@ -4,7 +4,7 @@ local net_utils = require 'misc.net_utils'
 local LSTM = require 'misc.LSTM'
 
 -------------------------------------------------------------------------------
--- Decoder Language Model core
+-- Language Model core
 -------------------------------------------------------------------------------
 
 local layer, parent = torch.class('nn.LanguageModel', 'nn.Module')
@@ -21,7 +21,6 @@ function layer:__init(opt)
   self.seq_length = utils.getopt(opt, 'seq_length')
   -- create the core lstm network. note +1 for both the START and END tokens
   self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
-  --A: lookup table are vectors
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
   self:_createInitState(1) -- will be lazily resized later during forward passes
 end
@@ -44,15 +43,15 @@ function layer:_createInitState(batch_size)
 end
 
 function layer:createClones()
-  -- construct the net clones of size sequence length
+  -- construct the net clones
   print('constructing clones inside the LanguageModel')
-  self.clones = {self.core} --A: an LSTM unit
-  self.lookup_tables = {self.lookup_table} -- A: a look-up table for what???
-  --A: the sequence units are all new units (via deep copy) but all share some parameters
-  for t=2,self.seq_length+2 do
+  self.clones = {self.core}
+  self.lookup_tables = {self.lookup_table}
+  for t=2,self.seq_length+1 do
     self.clones[t] = self.core:clone('weight', 'bias', 'gradWeight', 'gradBias')
     self.lookup_tables[t] = self.lookup_table:clone('weight', 'gradWeight')
   end
+  print('Clones done!')
 end
 
 function layer:getModulesList()
@@ -111,13 +110,10 @@ function layer:sample(imgs, opt)
   local seq = torch.LongTensor(self.seq_length, batch_size):zero()
   local seqLogprobs = torch.FloatTensor(self.seq_length, batch_size)
   local logprobs -- logprobs predicted in last time step
-  for t=1,self.seq_length+2 do
+  for t=1,self.seq_length+1 do
 
     local xt, it, sampleLogprobs
     if t == 1 then
-      -- feed in the images
-      xt = imgs
-    elseif t == 2 then
       -- feed in the start tokens
       it = torch.LongTensor(batch_size):fill(self.vocab_size+1)
       xt = self.lookup_table:forward(it)
@@ -143,12 +139,12 @@ function layer:sample(imgs, opt)
       xt = self.lookup_table:forward(it)
     end
 
-    if t >= 3 then 
-      seq[t-2] = it -- record the samples
-      seqLogprobs[t-2] = sampleLogprobs:view(-1):float() -- and also their log likelihoods
+    if t >= 2 then 
+      seq[t-1] = it -- record the samples
+      seqLogprobs[t-1] = sampleLogprobs:view(-1):float() -- and also their log likelihoods
     end
 
-    local inputs = {xt,unpack(state)}
+    local inputs = {xt,imgs,unpack(state)}
     local out = self.core:forward(inputs)
     logprobs = out[self.num_state+1] -- last element is the output vector
     state = {}
@@ -165,7 +161,7 @@ Not 100% sure it's correct, and hard to fully unit test to satisfaction, but
 it seems to work, doesn't crash, gives expected looking outputs, and seems to 
 improve performance, so I am declaring this correct.
 ]]--
-function layer:sample_beam(imgs, opt)
+function layer:sample_beam_not(imgs, opt)
   local beam_size = utils.getopt(opt, 'beam_size', 10)
   local batch_size, feat_dim = imgs:size(1), imgs:size(2)
   local function compare(a,b) return a.p > b.p end -- used downstream
@@ -297,33 +293,25 @@ function layer:updateOutput(input)
 
   assert(seq:size(1) == self.seq_length)
   local batch_size = seq:size(2)
-  --A: init with specific size
-  self.output:resize(self.seq_length+2, batch_size, self.vocab_size+1)
-
-  --A: each for every parallel process  
+  self.output:resize(self.seq_length+1, batch_size, self.vocab_size+1)
+  
   self:_createInitState(batch_size)
 
   self.state = {[0] = self.init_state}
   self.inputs = {}
   self.lookup_tables_inputs = {}
   self.tmax = 0 -- we will keep track of max sequence length encountered in the data for efficiency
-  for t=1,self.seq_length+2 do
-
+  for t=1,self.seq_length+1 do
     local can_skip = false
     local xt
     if t == 1 then
-      -- feed in the images
-      xt = imgs -- NxK sized input
-    elseif t == 2 then
       -- feed in the start tokens
       local it = torch.LongTensor(batch_size):fill(self.vocab_size+1)
-      --A: why do we need the look  up table here?
       self.lookup_tables_inputs[t] = it
-      -- get vectors of START Symbols
       xt = self.lookup_tables[t]:forward(it) -- NxK sized input (token embedding vectors)
     else
       -- feed in the rest of the sequence...
-      local it = seq[t-2]:clone()
+      local it = seq[t-1]:clone()
       if torch.sum(it) == 0 then
         -- computational shortcut for efficiency. All sequences have already terminated and only
         -- contain null tokens from here on. We can skip the rest of the forward pass and save time
@@ -346,7 +334,7 @@ function layer:updateOutput(input)
 
     if not can_skip then
       -- construct the inputs
-      self.inputs[t] = {xt,unpack(self.state[t-1])}
+      self.inputs[t] = {xt,imgs,unpack(self.state[t-1])}
       -- forward the network
       local out = self.clones[t]:forward(self.inputs[t])
       -- process the outputs
@@ -356,7 +344,6 @@ function layer:updateOutput(input)
       self.tmax = t
     end
   end
-
   return self.output
 end
 
@@ -376,16 +363,19 @@ function layer:updateGradInput(input, gradOutput)
     local dinputs = self.clones[t]:backward(self.inputs[t], dout)
     -- split the gradient to xt and to state
     local dxt = dinputs[1] -- first element is the input vector
-    dstate[t-1] = {} -- copy over rest to state grad
-    for k=2,self.num_state+1 do table.insert(dstate[t-1], dinputs[k]) end
-    
-    -- continue backprop of xt
-    if t == 1 then
-      dimgs = dxt
+    -- backprop in images
+    if t==self.tmax then
+       dimgs = dinputs[2]
     else
-      local it = self.lookup_tables_inputs[t]
-      self.lookup_tables[t]:backward(it, dxt) -- backprop into lookup table
+       dimgs = dimgs + dinputs[2] -- second element is the visual vector, accumulate gradients
     end
+
+    dstate[t-1] = {} -- copy over rest to state grad
+    for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs[k]) end
+    
+    -- continue backprop of inputs
+    local it = self.lookup_tables_inputs[t]
+    self.lookup_tables[t]:backward(it, dxt) -- backprop into lookup table
   end
 
   -- we have gradient on image, but for LongTensor gt sequence we only create an empty tensor - can't backprop
@@ -403,7 +393,7 @@ function crit:__init()
 end
 
 --[[
-input is a Tensor of size (D+2)xNx(M+1)
+input is a Tensor of size (D+1)xNx(M+1)
 seq is a LongTensor of size DxN. The way we infer the target
 in this criterion is as follows:
 - at first time step the output is ignored (loss = 0). It's the image tick
@@ -415,21 +405,21 @@ the gradients are properly set to zeros where appropriate.
 function crit:updateOutput(input, seq)
   self.gradInput:resizeAs(input):zero() -- reset to zeros
   local L,N,Mp1 = input:size(1), input:size(2), input:size(3)
-  local D = seq:size(1)
-  assert(D == L-2, 'input Tensor should be 2 larger in time')
+   local D = seq:size(1)
+   assert(D == L-1, 'input Tensor should be 1 larger in time')
 
   local loss = 0
   local n = 0
   for b=1,N do -- iterate over batches
     local first_time = true
-    for t=2,L do -- iterate over sequence time (ignore t=1, dummy forward for the image)
+    for t=1,L do -- iterate over sequence time (DO NOT ignore t=1, dummy forward for the image)
 
       -- fetch the index of the next token in the sequence
       local target_index
-      if t-1 > D then -- we are out of bounds of the index sequence: pad with null tokens
+      if t > D then -- we are out of bounds of the index sequence: pad with null tokens
         target_index = 0
       else
-        target_index = seq[{t-1,b}] -- t-1 is correct, since at t=2 START token was fed in and we want to predict first word (and 2-1 = 1).
+        target_index = seq[{t,b}] -- t is correct, since at t=1 START token was fed in and we want to predict first word (and t=1=1).
       end
       -- the first time we see null token as next index, actually want the model to predict the END token
       if target_index == 0 and first_time then

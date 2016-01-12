@@ -8,17 +8,19 @@ function LSTM.lstm(input_size, output_size, rnn_size, n, dropout)
   -- there will be 2*n+1 inputs
   local inputs = {}
   table.insert(inputs, nn.Identity()()) -- indices giving the sequence of symbols
+  table.insert(inputs, nn.Identity()()) -- vector encoding visual information
   for L = 1,n do
     table.insert(inputs, nn.Identity()()) -- prev_c[L]
     table.insert(inputs, nn.Identity()()) -- prev_h[L]
   end
 
   local x, input_size_L
+  local I = inputs[2]
   local outputs = {}
   for L = 1,n do
     -- c,h from previos timesteps
-    local prev_h = inputs[L*2+1]
-    local prev_c = inputs[L*2]
+    local prev_h = inputs[L*2+2]
+    local prev_c = inputs[L*2+1]
     -- the input to this layer
     if L == 1 then 
       x = inputs[1]
@@ -30,6 +32,10 @@ function LSTM.lstm(input_size, output_size, rnn_size, n, dropout)
     end
     -- evaluate the input sums at once for efficiency
     local i2h = nn.Linear(input_size_L, 4 * rnn_size)(x):annotate{name='i2h_'..L}
+    if L == 1 then
+       local I2h = nn.Linear(input_size_L, 4 * rnn_size)(I):annotate{name='I2h_'..L}
+       i2h = nn.CAddTable()({i2h, I2h})
+    end
     local h2h = nn.Linear(rnn_size, 4 * rnn_size)(prev_h):annotate{name='h2h_'..L}
     local all_input_sums = nn.CAddTable()({i2h, h2h})
 
