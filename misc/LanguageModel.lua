@@ -326,9 +326,8 @@ function layer:updateOutput(input)
   for t=1,self.seq_length+1 do
     --first thing is to take the visual vector with previous hidden state of the last layer 
     self.inputs_memNN[t] = {imgs, self.state[t-1][self.num_state]}
-    --dummy is the shared list which we do not need now 
     local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
-    local vis_vecs = out_memNN[1] -- out_memNN[2] is the shared list which we don't care about
+    local mem_vec = out_memNN[1] -- out_memNN[2] is the shared list which we don't care about
 
     local can_skip = false
     local xt
@@ -361,8 +360,8 @@ function layer:updateOutput(input)
     end
 
     if not can_skip then
-      -- construct the inputs
-      self.inputs_core[t] = {xt,vis_vecs,unpack(self.state[t-1])}
+      -- construct the inputs (word and memory vec to RNN)
+      self.inputs_core[t] = {xt,mem_vec,unpack(self.state[t-1])}
       -- forward the network
       local out_core = self.clones[t]:forward(self.inputs_core[t])
       -- process the outputs
@@ -381,25 +380,30 @@ gradOutput is an (D+1)xNx(M+1) Tensor.
 function layer:updateGradInput(input, gradOutput)
 
   -- go backwards and lets compute gradients
+  
+  --Initialize gradients of state at last timestep
   local dstate = {[self.tmax] = self.init_state} -- this works when init_state is all zeros
+
   for t=self.tmax,1,-1 do
     -- concat state gradients and output vector gradients at time step t
     local dout_core = {}
     for k=1,#dstate[t] do table.insert(dout_core, dstate[t][k]) end
+    
     table.insert(dout_core, gradOutput[t])
+
     --RNN gradients
     local dinputs_core = self.clones[t]:backward(self.inputs_core[t], dout_core)
-    --split the gradient of RNN core to xt and dimgs
+    --split the gradient of RNN core to xt and mem_vec
     local dxt = dinputs_core[1] -- first element is the input vector
-    local dimgs = dinputs_core[2]
+    local dmem_vec = dinputs_core[2]
     --MemNN gradients
-    local dinputs_memNN = self.memNNs[t]:backward(self.inputs_memNN[t],dimgs)
+    local dinputs_memNN = self.memNNs[t]:backward(self.inputs_memNN[t],dmem_vec)
     
     dstate[t-1] = {} -- copy over rest to state grad
     for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs_core[k]) end
 
-    -- at the last state of the network we have to add the gradient from the MemNN as well    
-    dstate[t-1] = dstate[t-1] + dinputs_memNN[2] -- cause dinputs_memNN[1] is images
+    -- at the last state of the RNN we have to add the gradient from the MemNN as well    
+    dstate[t-1][#dstate[t-1]] = dstate[t-1][#dstate[t-1]] + dinputs_memNN[2] -- cause dinputs_memNN[1] is images
 
     -- continue backprop of inputs
     local it = self.lookup_tables_inputs[t]
