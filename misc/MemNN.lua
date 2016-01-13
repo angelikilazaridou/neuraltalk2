@@ -2,13 +2,17 @@ require('nn')
 require('nngraph')
 paths.dofile('LinearNB.lua')
 
-local function build_memory(inputs, input_size, output_size, hops)
+local MemNN = {}
+
+local function MemNN.build_memory(inputs, input_size, output_size, hops)
+    
     local hid = {}   
     hid[0] = query
 
     local shareList = {}
     shareList[1] = {}
 
+    -- inputs are images and the query to compute attention
     local images = inputs[1]
     local query = inputs[2]
    
@@ -20,11 +24,11 @@ local function build_memory(inputs, input_size, output_size, hops)
     local Iin_m = nn.Linear(input_size, output_size)(images)
     Iin_m = nn.ReLu(Iin_m)
 
-
+    --pseudo recurrence on memory
     for h = 1, hops do
         local hid3dim = nn.View(1, -1):setNumInputDims(1)(hid[h-1])
         local MMaout = nn.MM(false, true):cuda()
-        --dot product for similarity between hidden state and query
+        --dot product for similarity between memories and query
         local Aout = MMaout({hid3dim, Iin_c})
         local Aout2dim = nn.View(-1):setNumInputDims(2)(Aout)
         -- similarities to attention probabilities
@@ -35,9 +39,11 @@ local function build_memory(inputs, input_size, output_size, hops)
         --weighted average of elements in memory
         local Bout = MMbout({probs3dim, Iin_m})
 
-        --combine current attention with previous for hop
+        --scale previous hop
         local C = nn.LinearNB(output_size, output_size)(hid[h-1])
+        -- share this across hops
         table.insert(shareList[1], C)
+	--combine current weighted average with previous hop
         local D = nn.CAddTable()({C, Bout})
       
         --save current hop
@@ -46,13 +52,14 @@ local function build_memory(inputs, input_size, output_size, hops)
     end
 
     local outputs = {}
+    -- return result of last ho[
     table.insert(outputs,hid[#hid])
     table.insert(outputs,shareList)
 
     return outputs
 end
 
-function g_build_model(input_size, output_size, hops)
+function MemNN.build_model(input_size, output_size, hops)
     
     --input
     local query = nn.Identity()()
@@ -76,6 +83,6 @@ function g_build_model(input_size, output_size, hops)
     return model
 end
 
-
+return MemNN
 
 

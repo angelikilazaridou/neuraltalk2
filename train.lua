@@ -29,6 +29,7 @@ cmd:option('-start_from', '', 'path to a model checkpoint to initialize model we
 cmd:option('-image_encoding_size',4096,'size of the image features e.g., fc7 -> 4096')
 cmd:option('-rnn_size',512,'size of the rnn in number of hidden nodes in each layer')
 cmd:option('-input_encoding_size',512,'the encoding size of each token in the vocabulary, and the image.')
+cmd:option('-hops',1,'The number of hops to perform at teh visual memory')
 
 -- Optimization: General
 cmd:option('-max_iters', -1, 'max number of iterations to run for (-1 = run forever)')
@@ -36,7 +37,6 @@ cmd:option('-batch_size',16,'what is the batch size in number of images per batc
 cmd:option('-grad_clip',0.1,'clip gradients at this value (note should be lower than usual 5 because we normalize grads by both batch and seq_length)')
 cmd:option('-drop_prob_lm', 0.5, 'strength of dropout in the Language Model RNN')
 cmd:option('-seq_per_img',5,'number of captions to sample for each image during training. Done for efficiency since CNN forward pass is expensive. E.g. coco has 5 sents/image')
-cmd:option('-finetune_cnn_after', -1, 'After what iteration do we start finetuning the CNN? (-1 = disable; never finetune, 0 = finetune from start)')
 
 -- Optimization: for the Language Model
 cmd:option('-optim','adam','what update to use? rmsprop|sgd|sgdmom|adagrad|adam')
@@ -47,12 +47,7 @@ cmd:option('-optim_alpha',0.8,'alpha for adagrad/rmsprop/momentum/adam')
 cmd:option('-optim_beta',0.999,'beta used for adam')
 cmd:option('-optim_epsilon',1e-8,'epsilon that goes into denominator for smoothing')
 
--- Optimization: for the CNN
-cmd:option('-cnn_optim','adam','optimization to use for CNN')
-cmd:option('-cnn_optim_alpha',0.8,'alpha for momentum of CNN')
-cmd:option('-cnn_optim_beta',0.999,'alpha for momentum of CNN')
-cmd:option('-cnn_learning_rate',1e-5,'learning rate for the CNN')
-cmd:option('-cnn_weight_decay', 0, 'L2 weight decay just for the CNN')
+
 
 -- Evaluation/Checkpointing
 cmd:option('-val_images_use', 3200, 'how many images to use when periodically evaluating the validation loss? (-1 = all)')
@@ -99,11 +94,9 @@ if string.len(opt.start_from) > 0 then
   print('initializing weights from ' .. opt.start_from)
   local loaded_checkpoint = torch.load(opt.start_from)
   protos = loaded_checkpoint.protos
-  net_utils.unsanitize_gradients(protos.cnn)
   local lm_modules = protos.lm:getModulesList()
   for k,v in pairs(lm_modules) do net_utils.unsanitize_gradients(v) end
   protos.crit = nn.LanguageModelCriterion() -- not in checkpoints, create manually
-  protos.expander = nn.FeatExpander(opt.seq_per_img) -- not in checkpoints, create manually
 else
   -- create protos from scratch
   -- intialize language model
@@ -117,13 +110,6 @@ else
   lmOpt.batch_size = opt.batch_size * opt.seq_per_img
   
   protos.lm = nn.LanguageModel(lmOpt)
-  --A: probably this we don't need in the memNN case
-  protos.cnn = net_utils.build_cnn({image_encoding_size = opt.image_encoding_size, encoding_size = opt.input_encoding_size, backend = cnn_backend})
-  
-  -- initialize a special FeatExpander module that "corrects" for the batch number discrepancy 
-  -- where we have multiple captions per one image in a batch. This is done for efficiency
-  -- because doing a CNN forward pass is expensive. We expand out the CNN features for each sentence
-  protos.expander = nn.FeatExpander(opt.seq_per_img)
   -- criterion for the language model
   protos.crit = nn.LanguageModelCriterion()
 end
@@ -136,11 +122,8 @@ end
 -- flatten and prepare all model parameters to a single vector. 
 -- Keep CNN params separate in case we want to try to get fancy with different optims on LM/CNN
 local params, grad_params = protos.lm:getParameters()
-local cnn_params, cnn_grad_params = protos.cnn:getParameters()
 print('total number of parameters in LM: ', params:nElement())
-print('total number of parameters in CNN mapping: ', cnn_params:nElement())
 assert(params:nElement() == grad_params:nElement())
-assert(cnn_params:nElement() == cnn_grad_params:nElement())
 
 --A: this is really for saving models efficiency
 -- construct thin module clones that share parameters with the actual
@@ -149,10 +132,7 @@ assert(cnn_params:nElement() == cnn_grad_params:nElement())
 local thin_lm = protos.lm:clone()
 thin_lm.core:share(protos.lm.core, 'weight', 'bias') -- TODO: we are assuming that LM has specific members! figure out clean way to get rid of, not modular.
 thin_lm.lookup_table:share(protos.lm.lookup_table, 'weight', 'bias')
-local thin_cnn = protos.cnn:clone('weight', 'bias')
---A: what is this??
 -- sanitize all modules of gradient storage so that we dont save big checkpoints
-net_utils.sanitize_gradients(thin_cnn)
 local lm_modules = thin_lm:getModulesList()
 for k,v in pairs(lm_modules) do net_utils.sanitize_gradients(v) end
 
@@ -168,7 +148,6 @@ local function eval_split(split, evalopt)
   local verbose = utils.getopt(evalopt, 'verbose', true)
   local val_images_use = utils.getopt(evalopt, 'val_images_use', true)
 
-  protos.cnn:evaluate()
   protos.lm:evaluate()
   loader:resetIterator(split) -- rewind iteator back to first datapoint in the split
   local n = 0
@@ -183,9 +162,7 @@ local function eval_split(split, evalopt)
     n = n + data.images:size(1)
 
     -- forward the model to get loss
-    local feats = protos.cnn:forward(data.images) 
-    local expanded_feats = protos.expander:forward(feats)
-    local logprobs = protos.lm:forward{expanded_feats, data.labels}
+    local logprobs = protos.lm:forward{data.images, data.labels}
     local loss = protos.crit:forward(logprobs, data.labels)
     loss_sum = loss_sum + loss
     loss_evals = loss_evals + 1
@@ -226,8 +203,6 @@ end
 -------------------------------------------------------------------------------
 local iter = 0
 local function lossFun()
-  --A: set model to training mode (flag given in nn.Module)
-  protos.cnn:training()
   protos.lm:training()
   
   grad_params:zero()
@@ -240,12 +215,8 @@ local function lossFun()
   -- data.feats: Nximage_encoding_size 
   -- data.seq: LxM where L is sequence length upper bound, and M = N*seq_per_img
 
-  -- forward the cnn feats into the mapping
-  local feats = protos.cnn:forward(data.images)
-  -- we have to expand out image features, once for each sentence
-  local expanded_feats = protos.expander:forward(feats)
   -- forward the language model
-  local logprobs = protos.lm:forward{expanded_feats, data.labels}
+  local logprobs = protos.lm:forward{data.images, data.labels}
   -- forward the language model criterion
   local loss = protos.crit:forward(logprobs, data.labels)
   
@@ -256,21 +227,11 @@ local function lossFun()
   local dlogprobs = protos.crit:backward(logprobs, data.labels)
   -- backprop language model
   local dexpanded_feats, ddummy = unpack(protos.lm:backward({expanded_feats, data.labels}, dlogprobs))
-  -- backprop the CNN, but only if we are finetuning
-  if opt.finetune_cnn_after >= 0 and iter >= opt.finetune_cnn_after then
-    local dfeats = protos.expander:backward(feats, dexpanded_feats)
-    local dx = protos.cnn:backward(data.images, dfeats)
-  end
+  
   -- clip gradients
   -- print(string.format('claming %f%% of gradients', 100*torch.mean(torch.gt(torch.abs(grad_params), opt.grad_clip))))
   grad_params:clamp(-opt.grad_clip, opt.grad_clip)
 
-  -- apply L2 regularization
-  if opt.cnn_weight_decay > 0 then
-    cnn_grad_params:add(opt.cnn_weight_decay, cnn_params)
-    -- note: we don't bother adding the l2 loss to the total loss, meh.
-    cnn_grad_params:clamp(-opt.grad_clip, opt.grad_clip)
-  end
   -----------------------------------------------------------------------------
 
   -- and lets get out!
@@ -283,7 +244,6 @@ end
 -------------------------------------------------------------------------------
 local loss0
 local optim_state = {}
-local cnn_optim_state = {}
 local loss_history = {}
 local val_lang_stats_history = {}
 local val_loss_history = {}
@@ -336,7 +296,6 @@ while true do
         -- include the protos (which have weights) and save to file
         local save_protos = {}
         save_protos.lm = thin_lm -- these are shared clones, and point to correct param storage
-        save_protos.cnn = thin_cnn
         checkpoint.protos = save_protos
         -- also include the vocabulary mapping so that we can use the checkpoint 
         -- alone to run on arbitrary images without the data loader
@@ -349,12 +308,10 @@ while true do
 
   -- decay the learning rate for both LM and CNN
   local learning_rate = opt.learning_rate
-  local cnn_learning_rate = opt.cnn_learning_rate
   if iter > opt.learning_rate_decay_start and opt.learning_rate_decay_start >= 0 then
     local frac = (iter - opt.learning_rate_decay_start) / opt.learning_rate_decay_every
     local decay_factor = math.pow(0.5, frac)
     learning_rate = learning_rate * decay_factor -- set the decayed rate
-    cnn_learning_rate = cnn_learning_rate * decay_factor
   end
 
   -- perform a parameter update
@@ -372,20 +329,6 @@ while true do
     adam(params, grad_params, learning_rate, opt.optim_alpha, opt.optim_beta, opt.optim_epsilon, optim_state)
   else
     error('bad option opt.optim')
-  end
-
-
-  -- do a cnn update (if finetuning, and if rnn above us is not warming up right now)
-  if opt.finetune_cnn_after >= 0 and iter >= opt.finetune_cnn_after then
-    if opt.cnn_optim == 'sgd' then
-      sgd(cnn_params, cnn_grad_params, cnn_learning_rate)
-    elseif opt.cnn_optim == 'sgdm' then
-      sgdm(cnn_params, cnn_grad_params, cnn_learning_rate, opt.cnn_optim_alpha, cnn_optim_state)
-    elseif opt.cnn_optim == 'adam' then
-      adam(cnn_params, cnn_grad_params, cnn_learning_rate, opt.cnn_optim_alpha, opt.cnn_optim_beta, opt.optim_epsilon, cnn_optim_state)
-    else
-      error('bad option for opt.cnn_optim')
-    end
   end
 
   -- stopping criterions

@@ -2,7 +2,7 @@ require 'nn'
 local utils = require 'misc.utils'
 local net_utils = require 'misc.net_utils'
 local LSTM = require 'misc.LSTM'
-require 'misc.MemNN'
+local MemNN = require 'misc.MemNN'
 
 -------------------------------------------------------------------------------
 -- Language Model core
@@ -23,10 +23,11 @@ function layer:__init(opt)
   -- options for Memory Network
   self.hops = utils.getopt(opt,'hops',1)
   self.image_encoding_size = utils.getopt(opt,'image_encoding_size') 
+
   -- create the core lstm network. note +1 for both the START and END tokens
   self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
   -- create the memory network
-  self.memMM = g_build_model(self.image_encoding_size, self.rnn_size, self.hops)
+  self.memMM = MemNN.build_model(self.image_encoding_size, self.rnn_size, self.hops)
   --create the lookup table
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
 
@@ -129,6 +130,10 @@ function layer:sample(imgs, opt)
   for t=1,self.seq_length+1 do
 
     local xt, it, sampleLogprobs
+
+    --get weighted average of images in memory
+    local out_memNN = self.memNNs[t]:forward({imgs, state[#state]})
+
     if t == 1 then
       -- feed in the start tokens
       it = torch.LongTensor(batch_size):fill(self.vocab_size+1)
@@ -314,10 +319,17 @@ function layer:updateOutput(input)
   self:_createInitState(batch_size)
 
   self.state = {[0] = self.init_state}
-  self.inputs = {}
+  self.inputs_core = {}
+  self.inputs_memNN = {}
   self.lookup_tables_inputs = {}
   self.tmax = 0 -- we will keep track of max sequence length encountered in the data for efficiency
   for t=1,self.seq_length+1 do
+    --first thing is to take the visual vector with previous hidden state of the last layer 
+    self.inputs_memNN[t] = {imgs, self.state[t-1][self.num_state]}
+    --dummy is the shared list which we do not need now 
+    local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
+    local vis_vecs = out_memNN[1] -- out_memNN[2] is the shared list which we don't care about
+
     local can_skip = false
     local xt
     if t == 1 then
@@ -350,13 +362,13 @@ function layer:updateOutput(input)
 
     if not can_skip then
       -- construct the inputs
-      self.inputs[t] = {xt,imgs,unpack(self.state[t-1])}
+      self.inputs_core[t] = {xt,vis_vecs,unpack(self.state[t-1])}
       -- forward the network
-      local out = self.clones[t]:forward(self.inputs[t])
+      local out_core = self.clones[t]:forward(self.inputs_core[t])
       -- process the outputs
-      self.output[t] = out[self.num_state+1] -- last element is the output vector
+      self.output[t] = out_core[self.num_state+1] -- last element is the output vector
       self.state[t] = {} -- the rest is state
-      for i=1,self.num_state do table.insert(self.state[t], out[i]) end
+      for i=1,self.num_state do table.insert(self.state[t], out_core[i]) end
       self.tmax = t
     end
   end
@@ -364,38 +376,38 @@ function layer:updateOutput(input)
 end
 
 --[[
-gradOutput is an (D+2)xNx(M+1) Tensor.
+gradOutput is an (D+1)xNx(M+1) Tensor.
 --]]
 function layer:updateGradInput(input, gradOutput)
-  local dimgs -- grad on input images
 
   -- go backwards and lets compute gradients
   local dstate = {[self.tmax] = self.init_state} -- this works when init_state is all zeros
   for t=self.tmax,1,-1 do
     -- concat state gradients and output vector gradients at time step t
-    local dout = {}
-    for k=1,#dstate[t] do table.insert(dout, dstate[t][k]) end
-    table.insert(dout, gradOutput[t])
-    local dinputs = self.clones[t]:backward(self.inputs[t], dout)
-    -- split the gradient to xt and to state
-    local dxt = dinputs[1] -- first element is the input vector
-    -- backprop in images
-    if t==self.tmax then
-       dimgs = dinputs[2]
-    else
-       dimgs = dimgs + dinputs[2] -- second element is the visual vector, accumulate gradients
-    end
-
-    dstate[t-1] = {} -- copy over rest to state grad
-    for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs[k]) end
+    local dout_core = {}
+    for k=1,#dstate[t] do table.insert(dout_core, dstate[t][k]) end
+    table.insert(dout_core, gradOutput[t])
+    --RNN gradients
+    local dinputs_core = self.clones[t]:backward(self.inputs_core[t], dout_core)
+    --split the gradient of RNN core to xt and dimgs
+    local dxt = dinputs_core[1] -- first element is the input vector
+    local dimgs = dinputs_core[2]
+    --MemNN gradients
+    local dinputs_memNN = self.memNNs[t]:backward(self.inputs_memNN[t],dimgs)
     
+    dstate[t-1] = {} -- copy over rest to state grad
+    for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs_core[k]) end
+
+    -- at the last state of the network we have to add the gradient from the MemNN as well    
+    dstate[t-1] = dstate[t-1] + dinputs_memNN[2] -- cause dinputs_memNN[1] is images
+
     -- continue backprop of inputs
     local it = self.lookup_tables_inputs[t]
     self.lookup_tables[t]:backward(it, dxt) -- backprop into lookup table
   end
 
-  -- we have gradient on image, but for LongTensor gt sequence we only create an empty tensor - can't backprop
-  self.gradInput = {dimgs, torch.Tensor()}
+  -- There are no gradients to backprop, really!
+  self.gradInput = {torch.Tensor(), torch.Tensor()}
   return self.gradInput
 end
 
