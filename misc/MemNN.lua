@@ -5,7 +5,8 @@ local MemNN = {}
 
 function MemNN.build_memory(input_size, output_size, mem_size, hops)
     
-   
+   require('mobdebug').start()
+
    local inputs = {}
    
    local mem_entries = {}
@@ -23,7 +24,7 @@ function MemNN.build_memory(input_size, output_size, mem_size, hops)
    
    local query = nn.Identity()()
    table.insert(inputs, query) -- for query
-   
+   require('mobdebug').off()
 
    
    local all_mem_entries = nn.JoinTable(1)(mem_entries)
@@ -42,5 +43,6 @@ function MemNN.build_memory(input_size, output_size, mem_size, hops)
    local output = weighted_average({probs_matrix, mem_matrix}) 
 
    return nn.gModule(inputs, {output})
+   
 end
 return MemNN

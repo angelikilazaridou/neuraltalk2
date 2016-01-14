@@ -1,3 +1,5 @@
+require('mobdebug').start()
+
 require 'torch'
 require 'nn'
 require 'nngraph'
@@ -111,6 +113,7 @@ else
   lmOpt.batch_size = opt.batch_size * opt.seq_per_img
   lmOpt.image_encoding_size = opt.image_encoding_size
   lmOpt.hops = opt.hops  
+  lmOpt.mem_size = opt.mem_size  
   protos.lm = nn.LanguageModel(lmOpt)
   -- criterion for the language model
   protos.crit = nn.LanguageModelCriterion()
@@ -218,7 +221,7 @@ local function lossFun()
   -- data.seq: LxM where L is sequence length upper bound, and M = N*seq_per_img
 
   -- forward the language model
-  local logprobs = protos.lm:forward{data.images, data.labels}
+  local logprobs = protos.lm:forward({data.images, data.labels})
   -- forward the language model criterion
   local loss = protos.crit:forward(logprobs, data.labels)
   

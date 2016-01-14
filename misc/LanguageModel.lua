@@ -23,12 +23,13 @@ function layer:__init(opt)
   self.seq_length = utils.getopt(opt, 'seq_length')
   -- options for Memory Network
   self.hops = utils.getopt(opt,'hops',1)
+  self.mem_size = utils.getopt(opt,'mem_size',5)
   self.image_encoding_size = utils.getopt(opt,'image_encoding_size', 4096) 
 
  -- create the core lstm network. note +1 for both the START and END tokens
   self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
   -- create the memory network
-  self.memNN = MemNN.build_memory(self.image_encoding_size, self.rnn_size, self.hops)
+  self.memNN = MemNN.build_memory(self.image_encoding_size, self.rnn_size, self.mem_size,  self.hops)
   --create the lookup table
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
   self:_createInitState(1) -- will be lazily resized later during forward passes
@@ -73,7 +74,7 @@ function layer:parameters()
   -- we only have three internal modules, return their params
   local p1,g1 = self.core:parameters()
   local p2,g2 = self.lookup_table:parameters() 
-  local p3, g3 = self.memNN:parameters()
+  local p3,g3 = self.memNN:parameters()
   
 
   local params = {}
@@ -325,9 +326,11 @@ function layer:updateOutput(input)
   self.tmax = 0 -- we will keep track of max sequence length encountered in the data for efficiency
   for t=1,self.seq_length+1 do
     --first thing is to take the visual vector with previous hidden state of the last layer 
-    self.inputs_memNN[t] = {imgs, self.state[t-1][self.num_state]}
+    self.inputs_memNN[t] = {unpack(imgs), self.state[t-1][self.num_state]}
+    print(#(self.inputs_memNN[t]))
+    print('Done here')
     local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
-    local mem_vec = out_memNN[1] -- out_memNN[2] is the shared list which we don't care about
+    local mem_vec = out_memNN[1][#out_memNN[1]]-- out_memNN[2] is the shared list which we don't care about
 
     local can_skip = false
     local xt
