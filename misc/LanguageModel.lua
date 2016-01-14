@@ -3,6 +3,7 @@ local utils = require 'misc.utils'
 local net_utils = require 'misc.net_utils'
 local LSTM = require 'misc.LSTM'
 local MemNN = require 'misc.MemNN'
+--paths.dofile('MemNN.lua')
 
 -------------------------------------------------------------------------------
 -- Language Model core
@@ -22,15 +23,14 @@ function layer:__init(opt)
   self.seq_length = utils.getopt(opt, 'seq_length')
   -- options for Memory Network
   self.hops = utils.getopt(opt,'hops',1)
-  self.image_encoding_size = utils.getopt(opt,'image_encoding_size') 
+  self.image_encoding_size = utils.getopt(opt,'image_encoding_size', 4096) 
 
-  -- create the core lstm network. note +1 for both the START and END tokens
+ -- create the core lstm network. note +1 for both the START and END tokens
   self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
   -- create the memory network
-  self.memMM = MemNN.build_model(self.image_encoding_size, self.rnn_size, self.hops)
+  self.memNN = MemNN.build_memory(self.image_encoding_size, self.rnn_size, self.hops)
   --create the lookup table
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
-
   self:_createInitState(1) -- will be lazily resized later during forward passes
 end
 
@@ -79,7 +79,7 @@ function layer:parameters()
   local params = {}
   for k,v in pairs(p1) do table.insert(params, v) end
   for k,v in pairs(p2) do table.insert(params, v) end
-  for k,v in pairs(p2) do table.insert(params, v) end
+  for k,v in pairs(p3) do table.insert(params, v) end
   
   local grad_params = {}
   for k,v in pairs(g1) do table.insert(grad_params, v) end
@@ -131,9 +131,9 @@ function layer:sample(imgs, opt)
 
     local xt, it, sampleLogprobs
 
-    --get weighted average of images in memory
-    local out_memNN = self.memNNs[t]:forward({imgs, state[#state]})
-
+    --get weighted average of images in memory of different hops
+    local tmp = self.memNNs[t]:forward({imgs, state[#state]})
+    local out_MemNN = temp[#temp]
     if t == 1 then
       -- feed in the start tokens
       it = torch.LongTensor(batch_size):fill(self.vocab_size+1)
@@ -165,7 +165,7 @@ function layer:sample(imgs, opt)
       seqLogprobs[t-1] = sampleLogprobs:view(-1):float() -- and also their log likelihoods
     end
 
-    local inputs = {xt,imgs,unpack(state)}
+    local inputs = {xt,out_MemNN,unpack(state)}
     local out = self.core:forward(inputs)
     logprobs = out[self.num_state+1] -- last element is the output vector
     state = {}

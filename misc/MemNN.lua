@@ -1,88 +1,46 @@
-require('nn')
-require('nngraph')
-paths.dofile('LinearNB.lua')
+require 'nn'
+require 'nngraph'
 
 local MemNN = {}
 
-local function MemNN.build_memory(inputs, input_size, output_size, hops)
+function MemNN.build_memory(input_size, output_size, mem_size, hops)
     
-    local hid = {}   
-    hid[0] = query
-
-    local shareList = {}
-    shareList[1] = {}
-
-    -- inputs are images and the query to compute attention
-    local images = inputs[1]
-    local query = inputs[2]
    
-    --embed images in some multimodal space     
-    local Iin_c = nn.Linear(input_size, output_size)(images)
-    Iin_c = nn.ReLu(Iin_c)
+   local inputs = {}
+   
+   local mem_entries = {}
+   -- each entry is of size batch_size x input_size
+   for i=1,mem_size do
+       local entry = nn.Identity()()
+       table.insert(inputs, entry) --insert mem entry one by one
+       
+       local mem_entry = nn.ReLU()(nn.Linear(input_size, output_size)(entry)) --embedding entry in memory
+       if i>1 then -- share parameters of each mem_entry with first one
+          mem_entry.data.module:share(mem_entries[1].data.module,'weight','bias','gradWeight','gradBias')
+       end
+       table.insert(mem_entries, mem_entry)      
+   end
+   
+   local query = nn.Identity()()
+   table.insert(inputs, query) -- for query
+   
 
-    --embed again images in another space (do we need this?)
-    local Iin_m = nn.Linear(input_size, output_size)(images)
-    Iin_m = nn.ReLu(Iin_m)
+   
+   local all_mem_entries = nn.JoinTable(1)(mem_entries)
+   local mem_matrix=nn.View(#mem_entries,-1)(all_mem_entries)    
+    --query has batch-size x output_size
+   local  query_matrix= nn.View(1, -1):setNumInputDims(1)(query)
+   --dot product for similarity between memories and query
+   local dot_product = nn.MM(false, true)
+   local sims = dot_product({query_matrix, mem_matrix})
+   local sims_matrix = nn.View(-1):setNumInputDims(2)(sims)
+   -- similarities to attention probabilities
+   local probs = nn.SoftMax()(sims_matrix)
+   --weighted average
+   local probs_matrix = nn.View(1, -1):setNumInputDims(1)(probs)
+   local weighted_average = nn.MM(false, false)
+   local output = weighted_average({probs_matrix, mem_matrix}) 
 
-    --pseudo recurrence on memory
-    for h = 1, hops do
-        local hid3dim = nn.View(1, -1):setNumInputDims(1)(hid[h-1])
-        local MMaout = nn.MM(false, true):cuda()
-        --dot product for similarity between memories and query
-        local Aout = MMaout({hid3dim, Iin_c})
-        local Aout2dim = nn.View(-1):setNumInputDims(2)(Aout)
-        -- similarities to attention probabilities
-        local P = nn.SoftMax()(Aout2dim)
-        
-        local probs3dim = nn.View(1, -1):setNumInputDims(1)(P)
-        local MMbout = nn.MM(false, false):cuda()
-        --weighted average of elements in memory
-        local Bout = MMbout({probs3dim, Iin_m})
-
-        --scale previous hop
-        local C = nn.LinearNB(output_size, output_size)(hid[h-1])
-        -- share this across hops
-        table.insert(shareList[1], C)
-	--combine current weighted average with previous hop
-        local D = nn.CAddTable()({C, Bout})
-      
-        --save current hop
-        hid[h] = D
-
-    end
-
-    local outputs = {}
-    -- return result of last ho[
-    table.insert(outputs,hid[#hid])
-    table.insert(outputs,shareList)
-
-    return outputs
+   return nn.gModule(inputs, {output})
 end
-
-function MemNN.build_model(input_size, output_size, hops)
-    
-    --input
-    local query = nn.Identity()()
-    local images = nn.Identity()()
-
-    table.insert(inputs, images)
-    table.insert(inputs, query)
- 
-    local hid, shareList = build_memory(inputs, input_size, output_size, hops)
-    --input to model is  {images, query} and output is the visual vector 
-    local model = nn.gModule(inputs,hid[#hid])
-    model:cuda()
-    -- IMPORTANT! do weight sharing after model is in cuda
-    for i = 1,#shareList do
-        local m1 = shareList[i][1].data.module
-        for j = 2,#shareList[i] do
-            local m2 = shareList[i][j].data.module
-            m2:share(m1,'weight','bias','gradWeight','gradBias')
-        end
-    end
-    return model
-end
-
 return MemNN
-
-

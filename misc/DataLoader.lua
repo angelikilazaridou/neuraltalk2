@@ -75,13 +75,14 @@ end
 function DataLoader:getBatch(opt)
   local split = utils.getopt(opt, 'split') -- lets require that user passes this in, for safety
   local batch_size = utils.getopt(opt, 'batch_size', 5) -- how many images get returned at one time (to go through CNN)
-  local seq_per_img = utils.getopt(opt, 'seq_per_img', 5) -- number of sequences to return per image
+  local seq_per_img = utils.getopt(opt, 'seq_per_img', 1) -- number of sequences to return per image
+  local mem_size = utils.getopt(opt, 'mem_size',5)
 
   local split_ix = self.split_ix[split]
   assert(split_ix, 'split ' .. split .. ' not found.')
 
   -- pick an index of the datapoint to load next
-  local img_batch_raw = torch.CudaTensor(batch_size, self.feat_size)
+  local img_batch_raw = torch.Tensor(batch_size, mem_size, self.feat_size)
   local label_batch = torch.LongTensor(batch_size * seq_per_img, self.seq_length)
   local max_index = #split_ix
   local wrapped = false
@@ -97,7 +98,18 @@ function DataLoader:getBatch(opt)
 
     -- fetch the image from h5
     local img = self.h5_file:read('/images'):partial({ix,ix},{1,self.feat_size})
-    img_batch_raw[i] = img
+    --create memories randomly
+    local idx = torch.randperm(mem_size)
+    for ii=1,idx:size(1) do
+       -- make sure to insert in memory correct image
+       if idx[ii] ==1 then
+          img_batch_raw[i][ii] = img
+       else
+          local iix = torch.random(1,#split_ix)
+          img = self.h5_file:read('/images'):partial({iix,iix},{1,self.feat_size}) 
+          img_batch_raw[i][ii] = img
+       end
+    end
 
     -- fetch the sequence labels
     local ix1 = self.label_start_ix[ix]
