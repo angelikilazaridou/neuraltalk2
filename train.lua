@@ -163,7 +163,7 @@ local function eval_split(split, evalopt)
   while true do
 
     -- fetch a batch of data
-    local data = loader:getBatch{batch_size = opt.batch_size, split = split, seq_per_img = opt.seq_per_img}
+    local data = loader:getBatch{batch_size = opt.batch_size, split = split, seq_per_img = opt.seq_per_img, mem_size = opt.mem_size}
 
     -- forward the model to get loss
     local logprobs = protos.lm:forward{data.images, data.labels}
@@ -215,7 +215,7 @@ local function lossFun()
   -- Forward pass
   -----------------------------------------------------------------------------
   -- get batch of data  
-  local data = loader:getBatch{batch_size = opt.batch_size, split = 'train', seq_per_img = opt.seq_per_img}
+  local data = loader:getBatch{batch_size = opt.batch_size, split = 'train', seq_per_img = opt.seq_per_img, mem_size = opt.mem_size}
   -- data.feats: Nximage_encoding_size 
   -- data.seq: LxM where L is sequence length upper bound, and M = N*seq_per_img
 
@@ -229,7 +229,6 @@ local function lossFun()
   -----------------------------------------------------------------------------
   -- backprop criterion
   local dlogprobs = protos.crit:backward(logprobs, data.labels)
-  print(data.labels)
   -- backprop language model
   local dexpanded_feats, ddummy = unpack(protos.lm:backward({data.images, data.labels}, dlogprobs))
   

@@ -1,3 +1,5 @@
+----NOTE: FIND WHY WITH MEMSIZE = 1 the jointable crashes
+
 require 'nn'
 require 'nngraph'
 
@@ -30,7 +32,7 @@ function MemNN.build_memory(input_size, output_size, mem_size, hops)
    
   
    --create a tensor out of the table of size (mem_size x output_size)
-   local all_mem_entries = nn.JoinTable(1)(mem_entries)
+   local all_mem_entries = mem_entries[1] --nn.JoinTable(1)(mem_entries)
    --group the data in the tensor  by mem_size per batch  (mem_size x output_size)
    local mem_matrix = nn.View(#mem_entries,-1)(all_mem_entries)    
     --query has 1 x output_size  (1 x output_size)

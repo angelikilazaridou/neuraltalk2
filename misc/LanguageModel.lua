@@ -365,6 +365,7 @@ function layer:updateOutput(input)
     if not can_skip then
       --first thing is to take the visual vector with previous hidden state of the last layer 
       self.inputs_memNN[t] = {self.state[t-1][self.num_state],unpack(imgs)}
+      
       local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
       local mem_vec = out_memNN
     
@@ -412,7 +413,7 @@ function layer:updateGradInput(input, gradOutput)
     for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs_core[k]) end
 
     -- at the last state of the RNN we have to add the gradient from the MemNN as well    
-    dstate[t-1][#dstate[t-1]] = dstate[t-1][#dstate[t-1]] + dinputs_memNN[1] -- cause dinputs_memNN[2] is images
+    dstate[t-1][#dstate[t-1]] = dstate[t-1][self.num_state] + dinputs_memNN[1] -- cause dinputs_memNN[2] is images
 
     -- continue backprop of inputs
     local it = self.lookup_tables_inputs[t]
