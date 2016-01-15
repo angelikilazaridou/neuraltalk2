@@ -33,7 +33,7 @@ function LSTM.lstm(input_size, output_size, rnn_size, n, dropout)
     -- evaluate the input sums at once for efficiency
     local i2h = nn.Linear(input_size_L, 4 * rnn_size)(x):annotate{name='i2h_'..L}
     if L == 1 then
-       local I2h = nn.Linear(input_size_L, 4 * rnn_size)(I):annotate{name='I2h_'..L}
+       local I2h = nn.Linear(rnn_size, 4 * rnn_size)(I):annotate{name='I2h_'..L}
        i2h = nn.CAddTable()({i2h, I2h})
     end
     local h2h = nn.Linear(rnn_size, 4 * rnn_size)(prev_h):annotate{name='h2h_'..L}

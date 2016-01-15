@@ -1,10 +1,10 @@
-require('mobdebug').start()
-
+--require('mobdebug').start() --start bebugging
+--require('mobdebug').off() --start bebugging
 require 'torch'
 require 'nn'
 require 'nngraph'
 -- exotic things
-require 'loadcaffe'
+--require 'loadcaffe'
 -- local imports
 local utils = require 'misc.utils'
 require 'misc.DataLoader'
@@ -164,7 +164,6 @@ local function eval_split(split, evalopt)
 
     -- fetch a batch of data
     local data = loader:getBatch{batch_size = opt.batch_size, split = split, seq_per_img = opt.seq_per_img}
-    n = n + data.images:size(1)
 
     -- forward the model to get loss
     local logprobs = protos.lm:forward{data.images, data.labels}
@@ -173,7 +172,7 @@ local function eval_split(split, evalopt)
     loss_evals = loss_evals + 1
 
     -- forward the model to also get generated samples for each image
-    local seq = protos.lm:sample(feats)
+    local seq = protos.lm:sample(data.images)
     local sents = net_utils.decode_sequence(vocab, seq)
     for k=1,#sents do
       local entry = {image_id = data.infos[k].id, caption = sents[k]}
@@ -230,8 +229,9 @@ local function lossFun()
   -----------------------------------------------------------------------------
   -- backprop criterion
   local dlogprobs = protos.crit:backward(logprobs, data.labels)
+  print(data.labels)
   -- backprop language model
-  local dexpanded_feats, ddummy = unpack(protos.lm:backward({expanded_feats, data.labels}, dlogprobs))
+  local dexpanded_feats, ddummy = unpack(protos.lm:backward({data.images, data.labels}, dlogprobs))
   
   -- clip gradients
   -- print(string.format('claming %f%% of gradients', 100*torch.mean(torch.gt(torch.abs(grad_params), opt.grad_clip))))

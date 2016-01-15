@@ -84,11 +84,13 @@ local function gradCheckLM()
   local opt = {}
   opt.vocab_size = 5
   opt.input_encoding_size = 4
+  opt.image_encoding_size = 3
   opt.rnn_size = 8
   opt.num_layers = 2
   opt.dropout = 0
   opt.seq_length = 7
-  opt.batch_size = 6
+  opt.batch_size = 1
+  opt.mem_size = 4
   local lm = nn.LanguageModel(opt)
   local crit = nn.LanguageModelCriterion()
   lm:type(dtype)
@@ -96,9 +98,13 @@ local function gradCheckLM()
 
   local seq = torch.LongTensor(opt.seq_length, opt.batch_size):random(opt.vocab_size)
   seq[{ {4, 7}, 1 }] = 0
-  seq[{ {5, 7}, 4 }] = 0
-  local imgs = torch.randn(opt.batch_size, opt.input_encoding_size):type(dtype)
-
+  
+  --images are a table of tensors (batch_size x input_encoding_size)
+  local imgs = {}
+  for i=1,opt.mem_size do
+    table.insert(imgs, torch.randn(opt.batch_size, opt.image_encoding_size):type(dtype))
+  end
+  
   -- evaluate the analytic gradient
   local output = lm:forward{imgs, seq}
   local w = torch.randn(output:size(1), output:size(2), output:size(3))
@@ -109,12 +115,12 @@ local function gradCheckLM()
 
   -- create a loss function wrapper
   local function f(x)
-    local output = lm:forward{x, seq}
+    local output = lm:forward{imgs, seq}
     local loss = torch.sum(torch.cmul(output, w))
     return loss
   end
 
-  local gradInput_num = gradcheck.numeric_gradient(f, imgs, 1, 1e-6)
+  local gradInput_num = gradcheck.numeric_gradient_table(f, imgs, 1, 1e-6)
 
    print(gradInput)
    print(gradInput_num)
@@ -138,7 +144,9 @@ local function gradCheck()
   opt.num_layers = 2
   opt.dropout = 0
   opt.seq_length = 7
-  opt.batch_size = 6
+  opt.batch_size = 1
+  opt.mem_size =2
+  opt.image_encoding_size = 3
   local lm = nn.LanguageModel(opt)
   local crit = nn.LanguageModelCriterion()
   lm:type(dtype)
@@ -146,26 +154,33 @@ local function gradCheck()
 
   local seq = torch.LongTensor(opt.seq_length, opt.batch_size):random(opt.vocab_size)
   seq[{ {4, 7}, 1 }] = 0
-  seq[{ {5, 7}, 4 }] = 0
-  local imgs = torch.randn(opt.batch_size, opt.input_encoding_size):type(dtype)
+  
+  --images are a table of tensors (batch_size x input_encoding_size)
+  local imgs = {}
+  for i=1,opt.mem_size do
+    table.insert(imgs, torch.randn(opt.batch_size, opt.image_encoding_size):type(dtype))
+  end
 
   -- evaluate the analytic gradient
   local output = lm:forward{imgs, seq}
   local loss = crit:forward(output, seq)
+  print(output)
+  print(seq)
   local gradOutput = crit:backward(output, seq)
   local gradInput, dummy = unpack(lm:backward({imgs, seq}, gradOutput))
 
   -- create a loss function wrapper
   local function f(x)
-    local output = lm:forward{x, seq}
+    local output = lm:forward{imgs, seq}
     local loss = crit:forward(output, seq)
     return loss
   end
 
-  local gradInput_num = gradcheck.numeric_gradient(f, imgs, 1, 1e-6)
+  local gradInput_num = gradcheck.numeric_gradient_table(f, imgs, 1, 1e-6)
 
    print(gradInput)
    print(gradInput_num)
+   print('tralala')
    local g = gradInput:view(-1)
    local gn = gradInput_num:view(-1)
    for i=1,g:nElement() do
@@ -308,10 +323,10 @@ local function sample_beam()
   tester:assert(torch.all(torch.gt(logsum2, logsum)))
 end
 
-tests.doubleApiForwardTest = forwardApiTestFactory('torch.DoubleTensor')
-tests.floatApiForwardTest = forwardApiTestFactory('torch.FloatTensor')
-tests.cudaApiForwardTest = forwardApiTestFactory('torch.CudaTensor')
-tests.gradCheck = gradCheck
+--tests.doubleApiForwardTest = forwardApiTestFactory('torch.DoubleTensor')
+--tests.floatApiForwardTest = forwardApiTestFactory('torch.FloatTensor')
+--tests.cudaApiForwardTest = forwardApiTestFactory('torch.CudaTensor')
+--tests.gradCheck = gradCheck
 tests.gradCheckLM = gradCheckLM
 --tests.overfit = overfit
 --tests.sample = sample

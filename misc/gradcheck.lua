@@ -1,3 +1,4 @@
+require 'nn'
 local gradcheck = {}
 
 
@@ -42,6 +43,52 @@ function gradcheck.numeric_gradient(f, x, df, eps)
       d = df * (pos - neg) / (2 * eps)
     end
     
+    dx_num_flat[i] = d
+    x_flat[i] = orig
+  end
+  return dx_num
+end
+
+function gradcheck.numeric_gradient_table(f, x, df, eps)
+  df = df or 1.0
+  eps = eps or 1e-8
+  --manually doing join table
+  local x_tensor = torch.Tensor(#x * x[1]:size(1),x[1]:size(2))
+  local kk = 1
+  for i=1,#x do
+    for j=1,x[1]:size(1) do
+        x_tensor[kk] = x[i][j]
+        kk = kk +1
+    end
+  end
+
+
+  local n = x_tensor:nElement()
+  local x_flat = x_tensor:view(n)
+  local dx_num = x_tensor.new(#x_tensor):zero()
+  local dx_num_flat = dx_num:view(n)
+  for i = 1, n do
+    local orig = x_flat[i]
+
+    x_flat[i] = orig + eps
+    local pos = f(x)
+    if torch.isTensor(df) then
+      pos = pos:clone()
+    end
+
+    x_flat[i] = orig - eps
+    local neg = f(x)
+    if torch.isTensor(df) then
+      neg = neg:clone()
+    end
+
+    local d = nil
+    if torch.isTensor(df) then
+      d = torch.dot(pos - neg, df) / (2 * eps)
+    else
+      d = df * (pos - neg) / (2 * eps)
+    end
+
     dx_num_flat[i] = d
     x_flat[i] = orig
   end

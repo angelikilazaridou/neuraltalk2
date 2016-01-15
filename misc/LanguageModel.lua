@@ -118,9 +118,10 @@ function layer:sample(imgs, opt)
   local sample_max = utils.getopt(opt, 'sample_max', 1)
   local beam_size = utils.getopt(opt, 'beam_size', 1)
   local temperature = utils.getopt(opt, 'temperature', 1.0)
+  local batch_size = utils.getopt(opt, 'batch_size', 1)
+  
   if sample_max == 1 and beam_size > 1 then return self:sample_beam(imgs, opt) end -- indirection for beam search
 
-  local batch_size = imgs:size(1)
   self:_createInitState(batch_size)
   local state = self.init_state
 
@@ -130,11 +131,8 @@ function layer:sample(imgs, opt)
   local logprobs -- logprobs predicted in last time step
   for t=1,self.seq_length+1 do
 
-    local xt, it, sampleLogprobs
-
-    --get weighted average of images in memory of different hops
-    local tmp = self.memNNs[t]:forward({imgs, state[#state]})
-    local out_MemNN = temp[#temp]
+    local xt, it, sampleLogprobs    
+    
     if t == 1 then
       -- feed in the start tokens
       it = torch.LongTensor(batch_size):fill(self.vocab_size+1)
@@ -165,8 +163,15 @@ function layer:sample(imgs, opt)
       seq[t-1] = it -- record the samples
       seqLogprobs[t-1] = sampleLogprobs:view(-1):float() -- and also their log likelihoods
     end
+    require('mobdebug').on() --start bebugging
 
-    local inputs = {xt,out_MemNN,unpack(state)}
+    --get weighted average of images in memory of different hops
+    local inputs = {state[self.num_state], unpack(imgs)}
+    local tmp = self.memNN:forward(inputs)
+    local out_MemNN = tmp
+    
+    --pass stuff through LSTM
+    inputs = {xt,out_MemNN,unpack(state)}
     local out = self.core:forward(inputs)
     logprobs = out[self.num_state+1] -- last element is the output vector
     state = {}
@@ -325,13 +330,7 @@ function layer:updateOutput(input)
   self.lookup_tables_inputs = {}
   self.tmax = 0 -- we will keep track of max sequence length encountered in the data for efficiency
   for t=1,self.seq_length+1 do
-    --first thing is to take the visual vector with previous hidden state of the last layer 
-    self.inputs_memNN[t] = {unpack(imgs), self.state[t-1][self.num_state]}
-    print(#(self.inputs_memNN[t]))
-    print('Done here')
-    local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
-    local mem_vec = out_memNN[1][#out_memNN[1]]-- out_memNN[2] is the shared list which we don't care about
-
+        
     local can_skip = false
     local xt
     if t == 1 then
@@ -361,10 +360,17 @@ function layer:updateOutput(input)
         xt = self.lookup_tables[t]:forward(it)
       end
     end
-
+    
+    
     if not can_skip then
+      --first thing is to take the visual vector with previous hidden state of the last layer 
+      self.inputs_memNN[t] = {self.state[t-1][self.num_state],unpack(imgs)}
+      local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
+      local mem_vec = out_memNN
+    
       -- construct the inputs (word and memory vec to RNN)
       self.inputs_core[t] = {xt,mem_vec,unpack(self.state[t-1])}
+      
       -- forward the network
       local out_core = self.clones[t]:forward(self.inputs_core[t])
       -- process the outputs
@@ -406,7 +412,7 @@ function layer:updateGradInput(input, gradOutput)
     for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs_core[k]) end
 
     -- at the last state of the RNN we have to add the gradient from the MemNN as well    
-    dstate[t-1][#dstate[t-1]] = dstate[t-1][#dstate[t-1]] + dinputs_memNN[2] -- cause dinputs_memNN[1] is images
+    dstate[t-1][#dstate[t-1]] = dstate[t-1][#dstate[t-1]] + dinputs_memNN[1] -- cause dinputs_memNN[2] is images
 
     -- continue backprop of inputs
     local it = self.lookup_tables_inputs[t]
