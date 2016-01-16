@@ -410,7 +410,7 @@ function layer:updateGradInput(input, gradOutput)
     for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs_core[k]) end
 
     -- at the last state of the RNN we have to add the gradient from the MemNN as well    
-    dstate[t-1][self.num_state-1] = dstate[t-1][self.num_state-1] + dinputs_memNN[1] -- cause dinputs_memNN[2-mem_size] is images
+    dstate[t-1][self.num_state] = dstate[t-1][self.num_state] + dinputs_memNN[1] -- cause dinputs_memNN[2-mem_size] is images
 
     -- continue backprop of inputs
     local it = self.lookup_tables_inputs[t]
