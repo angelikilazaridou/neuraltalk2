@@ -173,7 +173,7 @@ local function eval_split(split, evalopt)
     loss_evals = loss_evals + 1
 
     -- forward the model to also get generated samples for each image
-    local seq = protos.lm:sample(data.images)
+    local seq = protos.lm:sample(data.images, {batch_size = opt.batch_size})
     local sents = net_utils.decode_sequence(vocab, seq)
     for k=1,#sents do
       local entry = {image_id = data.infos[k].id, caption = sents[k]}
@@ -183,6 +183,7 @@ local function eval_split(split, evalopt)
       end
     end
 
+    n = n + #data.images
     -- if we wrapped around the split or used up val imgs budget then bail
     local ix0 = data.bounds.it_pos_now
     local ix1 = math.min(data.bounds.it_max, val_images_use)

@@ -20,10 +20,10 @@ function LSTM.lstm(image_size, mem_size, input_size, output_size, rnn_size, n, d
   --for memories
   local mem_entries = {}
   for i=1,mem_size do
-    --each entry is of size batch_size x input_size
+    --each entry is of size batch_size x image_size
     local entry = nn.Identity()()
     table.insert(inputs, entry) --insert mem entry one by one
-    -- mem entry is of size batch_size x output_size
+    -- mem entry is of size batch_size x rnn_size
     local mem_entry = nn.ReLU()(nn.Linear(image_size, rnn_size)(entry)) --embedding entry in memory
 
     if i>1 then -- share parameters of each mem_entry with first one
@@ -33,25 +33,28 @@ function LSTM.lstm(image_size, mem_size, input_size, output_size, rnn_size, n, d
   end
 
 
-  --create a tensor out of the table of size (mem_size x output_size)
-  local all_mem_entries = mem_entries[1] --nn.JoinTable(1)(mem_entries)
-  --group the data in the tensor  by mem_size per batch  (mem_size x output_size)
-  local mem_matrix = nn.View(#mem_entries,-1)(all_mem_entries)
-   --query has 1 x output_size  (1 x output_size)
-  local  query_matrix= nn.View(1, -1)(query)
+  --create a tensor out of the table of size (mem_size x x batch_size x rnn_size)
+  local all_mem_entries = nn.JoinTable(2)(mem_entries)
+  --convert this into a 3D of size batch x mem_size x rnn_size
+  local mem_entries_3D = nn.View(#mem_entries,-1):setNumInputDims(1)(all_mem_entries)
+   --query has batch_size x rnn_size ->   (batch_size x rnn_size x 1)
+  local query_3D= nn.View(rnn_size, -1):setNumInputDims(1)(query)
   --dot product for similarity between query and memories (1 x mem_size)
-  local dot_product = nn.MM(false, true)
-  -- dot product result (1 x mem_size)
-  local sims = dot_product({query_matrix, mem_matrix})
-  -- similarities to attention probabilities (1x mem_size)
-  local probs = nn.SoftMax()(sims)
+  local dot_product = nn.MM(false, false)
+  -- dot product result (batch_size x mem_size x 1)
+  local sims = dot_product({mem_entries_3D, query_3D})
+  -- throw the dummy dimension 
+  local sims_2D = nn.Select(3,1)(sims)
+  -- similarities to attention probabilities (batch_size x mem_size)
+  local probs = nn.SoftMax()(sims_2D)
+  -- add dummy dimension to convert probs 2D tensor to 3D for MM 
+  local probs_3D = nn.View(mem_size,-1):setNumInputDims(1)(probs)
   --weighted average
-  local weighted_average = nn.MM(false, false)
-  -- (1 x mem_size)
-  local I = weighted_average({probs, mem_matrix})
-  I = mem_entries[1]
-
-
+  local weighted_average = nn.MM(true, false)
+  -- (batch_size x rnn_size x 1)
+  local I = weighted_average({mem_entries_3D, probs_3D})
+  --get rid of dummy dimension
+  local Im = nn.Select(3,1)(I)
 
   local dropout = dropout or 0 
 
@@ -73,7 +76,7 @@ function LSTM.lstm(image_size, mem_size, input_size, output_size, rnn_size, n, d
     -- evaluate the input sums at once for efficiency
     local i2h = nn.Linear(input_size_L, 4 * rnn_size)(x):annotate{name='i2h_'..L}
     if L == 1 then
-       local I2h = nn.Linear(rnn_size, 4 * rnn_size)(I):annotate{name='I2h_'..L}
+       local I2h = nn.Linear(rnn_size, 4 * rnn_size)(Im):annotate{name='I2h_'..L}
        i2h = nn.CAddTable()({i2h, I2h})
     end
     local h2h = nn.Linear(rnn_size, 4 * rnn_size)(prev_h):annotate{name='h2h_'..L}
