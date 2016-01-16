@@ -1,8 +1,7 @@
 require 'nn'
 local utils = require 'misc.utils'
 local net_utils = require 'misc.net_utils'
-local LSTM = require 'misc.LSTM'
-local MemNN = require 'misc.MemNN'
+local LSTM = require 'misc.LSTM_MEMNN'
 --paths.dofile('MemNN.lua')
 
 -------------------------------------------------------------------------------
@@ -27,9 +26,7 @@ function layer:__init(opt)
   self.image_encoding_size = utils.getopt(opt,'image_encoding_size', 4096) 
 
  -- create the core lstm network. note +1 for both the START and END tokens
-  self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
-  -- create the memory network
-  self.memNN = MemNN.build_memory(self.image_encoding_size, self.rnn_size, self.mem_size,  self.hops)
+  self.core = LSTM.lstm(self.image_encoding_size, self.mem_size, self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
   --create the lookup table
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
   self:_createInitState(1) -- will be lazily resized later during forward passes
@@ -57,11 +54,9 @@ function layer:createClones()
   print('constructing clones inside the LanguageModel')
   self.clones = {self.core}
   self.lookup_tables = {self.lookup_table}
-  self.memNNs = {self.memNN}
   for t=2,self.seq_length+1 do
     self.clones[t] = self.core:clone('weight', 'bias', 'gradWeight', 'gradBias')
     self.lookup_tables[t] = self.lookup_table:clone('weight', 'gradWeight')
-    self.memNNs[t] = self.memNN:clone('weight','bias','gradWeight','gradBias')
   end
   print('Clones done!')
 end
@@ -74,18 +69,15 @@ function layer:parameters()
   -- we only have three internal modules, return their params
   local p1,g1 = self.core:parameters()
   local p2,g2 = self.lookup_table:parameters() 
-  local p3,g3 = self.memNN:parameters()
   
 
   local params = {}
   for k,v in pairs(p1) do table.insert(params, v) end
   for k,v in pairs(p2) do table.insert(params, v) end
-  for k,v in pairs(p3) do table.insert(params, v) end
   
   local grad_params = {}
   for k,v in pairs(g1) do table.insert(grad_params, v) end
   for k,v in pairs(g2) do table.insert(grad_params, v) end
-  for k,v in pairs(g3) do table.insert(grad_params, v) end
 
   -- todo: invalidate self.clones if params were requested?
   -- what if someone outside of us decided to call getParameters() or something?
@@ -98,14 +90,12 @@ function layer:training()
   if self.clones == nil then self:createClones() end -- create these lazily if needed
   for k,v in pairs(self.clones) do v:training() end
   for k,v in pairs(self.lookup_tables) do v:training() end
-  for k,v in pairs(self.memNNs) do v:training() end
 end
 
 function layer:evaluate()
   if self.clones == nil then self:createClones() end -- create these lazily if needed
   for k,v in pairs(self.clones) do v:evaluate() end
   for k,v in pairs(self.lookup_tables) do v:evaluate() end
-  for k,v in pairs(self.memNNs) do v:evaluate() end
 end
 
 --[[
@@ -163,15 +153,14 @@ function layer:sample(imgs, opt)
       seq[t-1] = it -- record the samples
       seqLogprobs[t-1] = sampleLogprobs:view(-1):float() -- and also their log likelihoods
     end
-    require('mobdebug').on() --start bebugging
 
-    --get weighted average of images in memory of different hops
-    local inputs = {state[self.num_state], unpack(imgs)}
-    local tmp = self.memNN:forward(inputs)
-    local out_MemNN = tmp
     
     --pass stuff through LSTM
-    inputs = {xt,out_MemNN,unpack(state)}
+    local inputs = {xt,unpack(state)}
+    for i=1,#imgs do
+      table.insert(inputs, imgs[i])
+    end
+
     local out = self.core:forward(inputs)
     logprobs = out[self.num_state+1] -- last element is the output vector
     state = {}
@@ -287,7 +276,7 @@ function layer:sample_beam_not(imgs, opt)
 
       if new_state then state = new_state end -- swap rnn state, if we reassinged beams
 
-      local inputs = {xt,unpack(state)}
+
       local out = self.core:forward(inputs)
       logprobs = out[self.num_state+1] -- last element is the output vector
       state = {}
@@ -326,7 +315,6 @@ function layer:updateOutput(input)
 
   self.state = {[0] = self.init_state}
   self.inputs_core = {}
-  self.inputs_memNN = {}
   self.lookup_tables_inputs = {}
   self.tmax = 0 -- we will keep track of max sequence length encountered in the data for efficiency
   for t=1,self.seq_length+1 do
@@ -363,15 +351,12 @@ function layer:updateOutput(input)
     
     
     if not can_skip then
-      --first thing is to take the visual vector with previous hidden state of the last layer 
-      self.inputs_memNN[t] = {self.state[t-1][self.num_state],unpack(imgs)}
-      
-      local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
-      local mem_vec = out_memNN
     
       -- construct the inputs (word and memory vec to RNN)
-      self.inputs_core[t] = {xt,mem_vec,unpack(self.state[t-1])}
-      
+      self.inputs_core[t] = {xt,unpack(self.state[t-1])}
+      for i=1,#imgs do
+         table.insert(self.inputs_core[t], imgs[i])
+      end        
       -- forward the network
       local out_core = self.clones[t]:forward(self.inputs_core[t])
       -- process the outputs
@@ -390,7 +375,6 @@ gradOutput is an (D+1)xNx(M+1) Tensor.
 function layer:updateGradInput(input, gradOutput)
 
   -- go backwards and lets compute gradients
-  
   --Initialize gradients of state at last timestep
   local dstate = {[self.tmax] = self.init_state} -- this works when init_state is all zeros
 
@@ -400,20 +384,15 @@ function layer:updateGradInput(input, gradOutput)
     for k=1,#dstate[t] do table.insert(dout_core, dstate[t][k]) end
     
     table.insert(dout_core, gradOutput[t])
-
+    
     --RNN gradients
     local dinputs_core = self.clones[t]:backward(self.inputs_core[t], dout_core)
     --split the gradient of RNN core to xt and mem_vec
     local dxt = dinputs_core[1] -- first element is the input vector
-    local dmem_vec = dinputs_core[2]
-    --MemNN gradients
-    local dinputs_memNN = self.memNNs[t]:backward(self.inputs_memNN[t],dmem_vec)
     
     dstate[t-1] = {} -- copy over rest to state grad
-    for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs_core[k]) end
+    for k=2,self.num_state+1 do table.insert(dstate[t-1], dinputs_core[k]) end
 
-    -- at the last state of the RNN we have to add the gradient from the MemNN as well    
-    dstate[t-1][#dstate[t-1]] = dstate[t-1][self.num_state] + dinputs_memNN[1] -- cause dinputs_memNN[2] is images
 
     -- continue backprop of inputs
     local it = self.lookup_tables_inputs[t]

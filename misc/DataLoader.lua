@@ -80,7 +80,6 @@ function DataLoader:getBatch(opt)
   local seq_per_img = utils.getopt(opt, 'seq_per_img', 1) -- number of sequences to return per image
   local mem_size = utils.getopt(opt, 'mem_size',5)
 
-  print(mem_size)
   local split_ix = self.split_ix[split]
   assert(split_ix, 'split ' .. split .. ' not found.')
 
