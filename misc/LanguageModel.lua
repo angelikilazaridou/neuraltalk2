@@ -29,7 +29,7 @@ function layer:__init(opt)
  -- create the core lstm network. note +1 for both the START and END tokens
   self.core = LSTM.lstm(self.input_encoding_size, self.vocab_size + 1, self.rnn_size, self.num_layers, dropout)
   -- create the memory network
-  self.memNN = MemNN.build_memory(self.image_encoding_size, self.rnn_size, self.mem_size,  self.hops)
+  self.memNN = MemNN.build_memory(self.image_encoding_size, self.rnn_size, self.mem_size)
   --create the lookup table
   self.lookup_table = nn.LookupTable(self.vocab_size + 1, self.input_encoding_size)
   self:_createInitState(1) -- will be lazily resized later during forward passes
@@ -163,12 +163,10 @@ function layer:sample(imgs, opt)
       seq[t-1] = it -- record the samples
       seqLogprobs[t-1] = sampleLogprobs:view(-1):float() -- and also their log likelihoods
     end
-    require('mobdebug').on() --start bebugging
 
     --get weighted average of images in memory of different hops
     local inputs = {state[self.num_state], unpack(imgs)}
-    local tmp = self.memNN:forward(inputs)
-    local out_MemNN = tmp
+    local out_MemNN = self.memNN:forward(inputs)
     
     --pass stuff through LSTM
     inputs = {xt,out_MemNN,unpack(state)}
@@ -367,10 +365,9 @@ function layer:updateOutput(input)
       self.inputs_memNN[t] = {self.state[t-1][self.num_state],unpack(imgs)}
       
       local out_memNN = self.memNNs[t]:forward(self.inputs_memNN[t])
-      local mem_vec = out_memNN
     
       -- construct the inputs (word and memory vec to RNN)
-      self.inputs_core[t] = {xt,mem_vec,unpack(self.state[t-1])}
+      self.inputs_core[t] = {xt,out_memNN,unpack(self.state[t-1])}
       
       -- forward the network
       local out_core = self.clones[t]:forward(self.inputs_core[t])
@@ -413,7 +410,7 @@ function layer:updateGradInput(input, gradOutput)
     for k=3,self.num_state+2 do table.insert(dstate[t-1], dinputs_core[k]) end
 
     -- at the last state of the RNN we have to add the gradient from the MemNN as well    
-    dstate[t-1][#dstate[t-1]] = dstate[t-1][self.num_state] + dinputs_memNN[1] -- cause dinputs_memNN[2] is images
+    dstate[t-1][self.num_state-1] = dstate[t-1][self.num_state-1] + dinputs_memNN[1] -- cause dinputs_memNN[2-mem_size] is images
 
     -- continue backprop of inputs
     local it = self.lookup_tables_inputs[t]
