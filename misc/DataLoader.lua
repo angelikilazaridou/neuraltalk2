@@ -109,13 +109,14 @@ function DataLoader:getBatch(opt)
     --create memories randomly
     local idx = torch.randperm(mem_size)
     for ii=1,idx:size(1) do
+       local pos = ii
        -- make sure to insert in memory correct image
-       if ii ==1 then
-          img_batch_raw[ii][i] = img
+       if pos ==1 then
+          img_batch_raw[pos][i] = img
         else
           local iix = torch.random(1,#split_ix)
           img = self.h5_file:read('/images'):partial({iix,iix},{1,self.feat_size}) 
-          img_batch_raw[ii][i] = img
+          img_batch_raw[pos][i] = img
        end
     end
 

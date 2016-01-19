@@ -2,6 +2,7 @@
 
 require 'nn'
 require 'nngraph'
+require 'misc.Peek'
 
 local MemNN = {}
 
@@ -45,7 +46,7 @@ function MemNN.build_memory(input_size, output_size, mem_size)
   -- similarities to attention probabilities (batch_size x mem_size)
   local probs = nn.SoftMax()(sims_2D)
   -- add dummy dimension to convert probs 2D tensor to 3D for MM 
-  local probs_3D = nn.View(mem_size,-1):setNumInputDims(1)(probs)
+  local probs_3D = nn.View(mem_size,-1):setNumInputDims(1)(nn.Peek()(probs))
   --weighted average
   local weighted_average = nn.MM(true, false)
   -- (batch_size x rnn_size x 1)
