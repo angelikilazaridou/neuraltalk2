@@ -20,7 +20,7 @@ function DataLoader:__init(opt)
   local images_size = self.h5_file:read('/images'):dataspaceSize()
   assert(#images_size == 2, '/images should be a 2D tensor')
   self.num_images = images_size[1]
-  self.feat_size = images_size[2]
+  self.feat_size = opt.image_encoding_size
   print(string.format('read %d images of size %d', self.num_images, self.feat_size))
 
   -- load in the sequence data

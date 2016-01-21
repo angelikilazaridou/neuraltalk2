@@ -2,11 +2,14 @@ local utils = require 'misc.utils'
 local net_utils = {}
 
 -- mapping from CNN_features to rnn_encoding 
-function net_utils.build_cnn(cnn, opt)
+function net_utils.build_cnn(opt)
   local backend = utils.getopt(opt, 'backend', 'nn')
   local encoding_size = utils.getopt(opt, 'encoding_size', 512)
   local image_encoding_size = utils.getopt(opt,'image_encoding_size',4096)
+
   
+  print(encoding_size)    
+
   if backend == 'cudnn' then
     require 'cudnn'
     backend = cudnn
@@ -19,7 +22,7 @@ function net_utils.build_cnn(cnn, opt)
 
   -- define the mapping 
   local cnn_part = nn.Sequential()
-  cnn_part:add(nn.Linear(4096,encoding_size))
+  cnn_part:add(nn.Linear(image_encoding_size, encoding_size))
   cnn_part:add(backend.ReLU(true))
   return cnn_part
 end

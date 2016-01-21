@@ -33,7 +33,7 @@ cmd:option('-input_encoding_size',512,'the encoding size of each token in the vo
 cmd:option('-max_iters', -1, 'max number of iterations to run for (-1 = run forever)')
 cmd:option('-batch_size',16,'what is the batch size in number of images per batch? (there will be x seq_per_img sentences)')
 cmd:option('-grad_clip',0.1,'clip gradients at this value (note should be lower than usual 5 because we normalize grads by both batch and seq_length)')
-cmd:option('-drop_prob_lm', 0.5, 'strength of dropout in the Language Model RNN')
+cmd:option('-drop_prob_lm', 0, 'strength of dropout in the Language Model RNN')
 cmd:option('-seq_per_img',5,'number of captions to sample for each image during training. Done for efficiency since CNN forward pass is expensive. E.g. coco has 5 sents/image')
 cmd:option('-finetune_cnn_after', -1, 'After what iteration do we start finetuning the CNN? (-1 = disable; never finetune, 0 = finetune from start)')
 
@@ -55,7 +55,7 @@ cmd:option('-cnn_weight_decay', 0, 'L2 weight decay just for the CNN')
 
 -- Evaluation/Checkpointing
 cmd:option('-val_images_use', 3200, 'how many images to use when periodically evaluating the validation loss? (-1 = all)')
-cmd:option('-save_checkpoint_every', 2500, 'how often to save a model checkpoint?')
+cmd:option('-save_checkpoint_every', 500, 'how often to save a model checkpoint?')
 cmd:option('-checkpoint_path', '', 'folder to save checkpoints into (empty = this folder)')
 cmd:option('-language_eval', 0, 'Evaluate language as well (1 = yes, 0 = no)? BLEU/CIDEr/METEOR/ROUGE_L? requires coco-caption code from Github.')
 cmd:option('-losses_log_every', 25, 'How often do we snapshot losses, for inclusion in the progress dump? (0 = disable)')
@@ -65,6 +65,7 @@ cmd:option('-backend', 'nn', 'nn|cudnn')
 cmd:option('-id', '', 'an id identifying this run/job. used in cross-val and appended when writing progress files')
 cmd:option('-seed', 123, 'random number generator seed to use')
 cmd:option('-gpuid', 0, 'which gpu to use. -1 = use CPU')
+cmd:option('-grad_check', false, 'set this flag to do a gradient checking run and exit')
 
 cmd:text()
 
@@ -82,11 +83,11 @@ if opt.gpuid >= 0 then
   cutorch.manualSeed(opt.seed)
   cutorch.setDevice(opt.gpuid + 1) -- note +1 because lua is 1-indexed
 end
-
+print()
 -------------------------------------------------------------------------------
 -- Create the Data Loader instance
 -------------------------------------------------------------------------------
-local loader = DataLoader{h5_file = opt.input_h5, json_file = opt.input_json}
+local loader = DataLoader{h5_file = opt.input_h5, json_file = opt.input_json, image_encoding_size = opt.image_encoding_size}
 
 -------------------------------------------------------------------------------
 -- Initialize the networks
@@ -116,7 +117,7 @@ else
   lmOpt.batch_size = opt.batch_size * opt.seq_per_img
   
   protos.lm = nn.LanguageModel(lmOpt)
-  protos.cnn = net_utils.build_cnn({image_encoding_size = opt.image_encoding_size, encoding_size = opt.input_encoding_size, backend = cnn_backend})
+  protos.cnn = net_utils.build_cnn{image_encoding_size = opt.image_encoding_size, encoding_size = opt.input_encoding_size, backend = cnn_backend}
   
   -- initialize a special FeatExpander module that "corrects" for the batch number discrepancy 
   -- where we have multiple captions per one image in a batch. This is done for efficiency
@@ -261,21 +262,38 @@ local function lossFun()
   end
   -- clip gradients
   -- print(string.format('claming %f%% of gradients', 100*torch.mean(torch.gt(torch.abs(grad_params), opt.grad_clip))))
-  grad_params:clamp(-opt.grad_clip, opt.grad_clip)
+  if not grad_check then
+     grad_params:clamp(-opt.grad_clip, opt.grad_clip)
 
-  -- apply L2 regularization
-  if opt.cnn_weight_decay > 0 then
-    cnn_grad_params:add(opt.cnn_weight_decay, cnn_params)
-    -- note: we don't bother adding the l2 loss to the total loss, meh.
-    cnn_grad_params:clamp(-opt.grad_clip, opt.grad_clip)
+     -- apply L2 regularization
+     if opt.cnn_weight_decay > 0 then
+       cnn_grad_params:add(opt.cnn_weight_decay, cnn_params)
+       -- note: we don't bother adding the l2 loss to the total loss, meh.
+       cnn_grad_params:clamp(-opt.grad_clip, opt.grad_clip)
+     end
   end
   -----------------------------------------------------------------------------
 
   -- and lets get out!
   local losses = { total_loss = loss }
-  return losses
+  return loss, grad_params
 end
 
+
+
+-------------------------------------------------------------------------------
+-- Gradient Ckecing
+-------------------------------------------------------------------------------
+if opt.grad_check then
+    if opt.gpuid >= 0 then
+      print('WARNING!!! Running gradient checking on GPU. Numerical gradient might be off by a large amount.')
+    end
+    require 'util.grad_check'
+    print('Running gradient checking...')
+    local err = grad_check(lossFun, params:clone(), function() loader:resetIterator('train') end)
+    print('Gradient Check: '.. err .. ' [' .. (err < 1e-5 and 'PASSED' or 'FAILED') ..']')
+    os.exit()
+end
 -------------------------------------------------------------------------------
 -- Main loop
 -------------------------------------------------------------------------------
@@ -289,9 +307,9 @@ local best_score
 while true do  
 
   -- eval loss/gradient
-  local losses = lossFun()
-  if iter % opt.losses_log_every == 0 then loss_history[iter] = losses.total_loss end
-  print(string.format('iter %d: %f', iter, losses.total_loss))
+  local losses, dummy = lossFun()
+  if iter % opt.losses_log_every == 0 then loss_history[iter] = losses end
+  print(string.format('iter %d: %f', iter, losses))
 
   -- save checkpoint once in a while (or on final iteration)
   if (iter % opt.save_checkpoint_every == 0 or iter == opt.max_iters) then
@@ -389,8 +407,8 @@ while true do
   -- stopping criterions
   iter = iter + 1
   if iter % 10 == 0 then collectgarbage() end -- good idea to do this once in a while, i think
-  if loss0 == nil then loss0 = losses.total_loss end
-  if losses.total_loss > loss0 * 20 then
+  if loss0 == nil then loss0 = losses end
+  if losses > loss0 * 20 then
     print('loss seems to be exploding, quitting.')
     break
   end
